@@ -16,7 +16,8 @@ ASSETS = {
 
 DIRECTION_PHRASES = [
     "higher", "up", "above", "increase", "rise",
-    "lower", "down", "below", "decrease", "fall"
+    "lower", "down", "below", "decrease", "fall",
+    "end", "close", "finish", "week", "day"
 ]
 
 
@@ -28,18 +29,19 @@ async def fetch_active_markets(session: aiohttp.ClientSession, asset: str) -> li
         try:
             async with session.get(
                 f"{GAMMA_BASE}/markets",
-                params={"active": "true", "closed": "false", "limit": 50, "keyword": keyword},
-                timeout=aiohttp.ClientTimeout(total=10)
+                params={"active": "true", "closed": "false", "limit": 100, "keyword": keyword},
+                timeout=aiohttp.ClientTimeout(total=15)
             ) as resp:
                 if resp.status != 200:
+                    print(f"[Polymarket] HTTP {resp.status} for {keyword}")
                     continue
                 data = await resp.json()
                 markets = data if isinstance(data, list) else data.get("markets", [])
+                print(f"[Polymarket] '{keyword}' returned {len(markets)} markets")
 
                 for m in markets:
                     question = m.get("question", "").lower()
-                    if not any(p in question for p in DIRECTION_PHRASES):
-                        continue
+                    # must mention the asset keyword
                     if not any(kw in question for kw in keywords):
                         continue
                     results.append({
@@ -48,17 +50,18 @@ async def fetch_active_markets(session: aiohttp.ClientSession, asset: str) -> li
                         "question": m.get("question"),
                         "asset": asset.upper(),
                         "end_date": m.get("endDate"),
-                        "tokens": m.get("tokens", []),
                     })
-
         except Exception as e:
-            print(f"[Polymarket] Error fetching {asset}: {e}")
+            print(f"[Polymarket] Error fetching {keyword}: {e}")
 
+    # deduplicate
     seen, unique = set(), []
     for m in results:
-        if m["id"] not in seen:
+        if m["id"] not in seen and m.get("condition_id"):
             seen.add(m["id"])
             unique.append(m)
+
+    print(f"[Polymarket] {asset} total unique markets: {len(unique)}")
     return unique
 
 
@@ -104,7 +107,7 @@ async def get_markets_with_prices(asset: str) -> list[dict]:
 
         prices_list = await asyncio.gather(*[
             fetch_prices(session, m["condition_id"])
-            for m in markets if m.get("condition_id")
+            for m in markets
         ], return_exceptions=True)
 
         enriched = []
@@ -112,4 +115,6 @@ async def get_markets_with_prices(asset: str) -> list[dict]:
             if isinstance(prices, dict):
                 market.update(prices)
                 enriched.append(market)
+
+        print(f"[Polymarket] {asset} markets with valid prices: {len(enriched)}")
         return enriched

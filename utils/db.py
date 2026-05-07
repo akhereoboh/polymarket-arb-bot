@@ -22,7 +22,11 @@ def get_client() -> Optional[Client]:
     if not url or not key:
         print("[Supabase] Missing credentials in .env")
         return None
-    _client = create_client(url, key)
+    try:
+        from supabase.client import ClientOptions
+        _client = create_client(url, key, options=ClientOptions(postgrest_client_timeout=10))
+    except Exception:
+        _client = create_client(url, key)
     return _client
 
 
