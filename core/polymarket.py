@@ -23,25 +23,24 @@ async def classify_markets_with_claude(markets: list[dict], asset: str) -> list[
 
     prompt = f"""You are filtering Polymarket prediction market questions.
 
-I need ONLY markets asking whether {asset_label} price will be HIGHER or LOWER than a specific price level at a specific future time.
+I need markets related to {asset_label} PRICE MOVEMENT or PRICE LEVELS.
 
-Valid examples:
-- "Will BTC be above $80,000 on May 15?"
-- "Will Bitcoin close above $75,000 this week?"
-- "Will ETH be higher than $2,500 on Friday?"
-- "Will Bitcoin be higher than its current price on Sunday?"
+Accept any market that involves:
+- BTC or Bitcoin price going up, down, higher, lower, above or below any value
+- ETH or Ethereum price going up, down, higher, lower, above or below any value  
+- Whether BTC/ETH will reach, hit, exceed or stay below a price target
+- Weekly, daily or monthly BTC/ETH price outcomes
 
-Invalid examples:
-- "Will Bitcoin hit $1 million before GTA VI?" (milestone not direction)
-- "Will MegaETH do an airdrop?" (not a price question)
-- "Will Netherlands win the World Cup?" (wrong asset)
-- "Will Bitcoin ETF get approved?" (event not price)
+Reject only markets that have NOTHING to do with price:
+- Regulatory/ETF approval events
+- Network upgrades or airdrops
+- Sports or unrelated topics that happen to contain "eth" or "btc"
 
-Markets to evaluate:
+Here are the markets:
 {questions_text}
 
-Reply with ONLY the numbers of valid price direction markets, comma separated.
-If none are valid reply with: NONE
+Reply with ONLY the numbers of relevant markets, comma separated.
+If none are relevant reply with: NONE
 Example: 1, 3, 7"""
 
     api_key = os.getenv("ANTHROPIC_API_KEY")
