@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from telegram.bot import send_message, get_application, register_handlers
+from tgram.bot import send_message, get_application, register_handlers
 from core.scanner import scan_once
 from utils.db import check_and_close_open_trades
 
