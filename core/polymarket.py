@@ -1,6 +1,6 @@
 import aiohttp
 import asyncio
-import anthropic
+
 import os
 from typing import Optional
 
@@ -9,34 +9,21 @@ CLOB_BASE = "https://clob.polymarket.com"
 
 _anthropic_client = None
 
-def get_anthropic_client():
-    global _anthropic_client
-    if _anthropic_client:
-        return _anthropic_client
-    _anthropic_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-    return _anthropic_client
 
 
 async def classify_markets_with_claude(markets: list[dict], asset: str) -> list[dict]:
-    """
-    Send market questions to Claude and ask it to identify which ones
-    are genuine price direction markets for BTC or ETH.
-    Returns only the valid direction markets.
-    """
     if not markets:
         return []
 
-    # Build a numbered list of questions for Claude to evaluate
+    asset_label = "Bitcoin (BTC)" if asset == "BTC" else "Ethereum (ETH)"
     questions_text = "\n".join([
         f"{i+1}. {m['question']}"
         for i, m in enumerate(markets)
     ])
 
-    asset_label = "Bitcoin (BTC)" if asset == "BTC" else "Ethereum (ETH)"
-
     prompt = f"""You are filtering Polymarket prediction market questions.
 
-I need ONLY markets that are asking whether {asset_label} price will be HIGHER or LOWER than a specific price level at a specific future time.
+I need ONLY markets asking whether {asset_label} price will be HIGHER or LOWER than a specific price level at a specific future time.
 
 Valid examples:
 - "Will BTC be above $80,000 on May 15?"
@@ -44,52 +31,66 @@ Valid examples:
 - "Will ETH be higher than $2,500 on Friday?"
 - "Will Bitcoin be higher than its current price on Sunday?"
 
-Invalid examples (reject these):
-- "Will Bitcoin hit $1 million before GTA VI?" (milestone, not time-bound direction)
+Invalid examples:
+- "Will Bitcoin hit $1 million before GTA VI?" (milestone not direction)
 - "Will MegaETH do an airdrop?" (not a price question)
-- "Will Netherlands win the World Cup?" (wrong asset, eth in Netherlands)
-- "Will Bitcoin ETF get approved?" (event, not price direction)
-- "Will BTC reach $100k in 2025?" (milestone, not up/down from current)
+- "Will Netherlands win the World Cup?" (wrong asset)
+- "Will Bitcoin ETF get approved?" (event not price)
 
-Here are the markets to evaluate:
+Markets to evaluate:
 {questions_text}
 
 Reply with ONLY the numbers of valid price direction markets, comma separated.
-If none are valid, reply with: NONE
-Example reply: 1, 3, 7
-"""
+If none are valid reply with: NONE
+Example: 1, 3, 7"""
+
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        print("[Claude] No API key found, skipping classification")
+        return markets
 
     try:
-        client = get_anthropic_client()
-        message = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=100,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        response = message.content[0].text.strip()
-        print(f"[Claude] Classification response: {response}")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 100,
+                    "messages": [{"role": "user", "content": prompt}]
+                },
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as resp:
+                if resp.status != 200:
+                    print(f"[Claude] API error {resp.status}")
+                    return markets
+                data = await resp.json()
+                response = data["content"][0]["text"].strip()
+                print(f"[Claude] Classification: {response}")
 
-        if response == "NONE" or not response:
-            return []
+                if response == "NONE" or not response:
+                    return []
 
-        # parse the numbers Claude returned
-        valid_indices = []
-        for part in response.split(","):
-            part = part.strip()
-            if part.isdigit():
-                idx = int(part) - 1  # convert to 0-based
-                if 0 <= idx < len(markets):
-                    valid_indices.append(idx)
+                valid_indices = []
+                for part in response.split(","):
+                    part = part.strip()
+                    if part.isdigit():
+                        idx = int(part) - 1
+                        if 0 <= idx < len(markets):
+                            valid_indices.append(idx)
 
-        valid_markets = [markets[i] for i in valid_indices]
-        print(f"[Claude] {len(valid_markets)} valid direction markets identified")
-        for m in valid_markets:
-            print(f"  ✓ {m['question']}")
-        return valid_markets
+                valid_markets = [markets[i] for i in valid_indices]
+                print(f"[Claude] {len(valid_markets)} valid markets")
+                for m in valid_markets:
+                    print(f"  ✓ {m['question']}")
+                return valid_markets
 
     except Exception as e:
         print(f"[Claude] Classification error: {e}")
-        # fallback — return all markets if Claude fails
         return markets
 
 
