@@ -26,6 +26,7 @@ async def scanner_loop():
 async def autoclose_loop():
     """Check open trades every 3 minutes and close if target/stop hit."""
     print("[Main] Auto-close loop started")
+    await asyncio.sleep(10)
     while True:
         try:
             await check_and_close_open_trades(send_alert_fn=send_message)
