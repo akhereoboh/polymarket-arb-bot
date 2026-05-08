@@ -1,34 +1,56 @@
 import asyncio
 import os
-from datetime import datetime, timezone
+import time
 from core.polymarket import get_markets_with_orderbook
 from utils.db import log_arb_trade
 
 ARB_THRESHOLD = float(os.getenv("ARB_THRESHOLD", "0.991"))
 SHARES = int(os.getenv("ORDER_SIZE", "5"))
 
-# track which markets we already entered this cycle
 _traded_markets: set = set()
+_market_cache: list = []
+_cache_timestamp: float = 0
+CACHE_TTL = 30  # refresh market list every 30 seconds
+
+
+async def get_cached_markets() -> list:
+    """
+    Return cached markets if fresh, otherwise fetch new ones.
+    This prevents hammering the API every second.
+    """
+    global _market_cache, _cache_timestamp
+
+    now = time.time()
+    if now - _cache_timestamp < CACHE_TTL and _market_cache:
+        return _market_cache
+
+    markets = await get_markets_with_orderbook()
+    if markets:
+        _market_cache = markets
+        _cache_timestamp = now
+        print(f"[Scanner] Cache refreshed — {len(markets)} markets")
+
+    return _market_cache
 
 
 def reset_traded_markets():
-    """Call this when a new market cycle starts."""
     global _traded_markets
     _traded_markets = set()
 
 
 async def scan_once(send_alert_fn=None) -> list:
-    """
-    One scan cycle — check all active 15m markets for arb opportunity.
-    Runs every 1 second.
-    """
     opportunities = []
 
-    markets = await get_markets_with_orderbook()
+    markets = await get_cached_markets()
     if not markets:
         return []
+
     best = min(markets, key=lambda m: m.get("total", 99))
-    print(f"[Scanner] {len(markets)} markets | Best: {best['asset']} {best['timeframe']} total={best.get('total')} gap={best.get('gap')}")
+    print(
+        f"[Scanner] {len(markets)} markets | "
+        f"Best: {best['asset']} {best['timeframe']} "
+        f"total={best.get('total')} gap={best.get('gap')}"
+    )
 
     for market in markets:
         condition_id = market["condition_id"]
@@ -39,15 +61,12 @@ async def scan_once(send_alert_fn=None) -> list:
         if up_ask is None or down_ask is None or total is None:
             continue
 
-        # skip if already traded this market this session
         if condition_id in _traded_markets:
             continue
 
-        # pure arb condition
         if total > ARB_THRESHOLD:
             continue
 
-        # opportunity found
         _traded_markets.add(condition_id)
 
         total_invested = round(total * SHARES, 4)
@@ -82,10 +101,8 @@ async def scan_once(send_alert_fn=None) -> list:
             f"Profit/trade: ${expected_profit}"
         )
 
-        # log to supabase
         await log_arb_trade(opportunity)
 
-        # send telegram alert
         if send_alert_fn:
             msg = format_arb_alert(opportunity)
             try:
