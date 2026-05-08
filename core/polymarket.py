@@ -13,9 +13,8 @@ ASSETS = {
     "doge": "DOGE",
     "bnb": "BNB",
 }
-# Only 15m and 4h timeframes — 5m is too fast for our strategy
-ALLOWED_TIMEFRAMES = ["15m", "4h"]
 
+ALLOWED_TIMEFRAMES = ["5m", "15m", "4h"]
 
 async def fetch_active_updown_markets(session: aiohttp.ClientSession) -> list[dict]:
     """

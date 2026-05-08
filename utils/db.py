@@ -71,6 +71,54 @@ async def log_signal(signal) -> bool:
         print(f"[Supabase] log_signal error: {e}")
         return False
 
+async def log_arb_signal(signal) -> bool:
+    """Save a pure arb signal to the signals table."""
+    url, _ = get_credentials()
+    if not url:
+        return False
+    try:
+        payload = {
+            "asset": signal.asset,
+            "market_question": signal.market_question,
+            "market_id": signal.market_id,
+            "signal_type": "BUY_BOTH",
+            "entry_price": signal.total_cost,
+            "implied_fair_value": 1.0,
+            "divergence": round(1.0 - signal.total_cost, 4),
+            "momentum_direction": "ARB",
+            "momentum_strength": signal.profit_pct / 100,
+            "asset_price": 0,
+            "confidence": signal.confidence,
+            "reason": f"Pure arb: UP {signal.up_price} + DOWN {signal.down_price} = {signal.total_cost}",
+            "status": "OPEN",
+            "paper_entry": signal.total_cost,
+            "paper_target": 1.0,
+            "paper_stop": signal.total_cost - 0.02,
+            "strategy": "PURE_ARB",
+            "up_price": signal.up_price,
+            "down_price": signal.down_price,
+            "total_cost": signal.total_cost,
+            "arb_profit": signal.expected_profit,
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{url}/rest/v1/signals",
+                json=payload,
+                headers=headers(),
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status in (200, 201):
+                    print(f"[Supabase] Arb signal logged: {signal.asset} {signal.timeframe}")
+                    return True
+                else:
+                    text = await resp.text()
+                    print(f"[Supabase] Arb log error {resp.status}: {text}")
+                    return False
+    except Exception as e:
+        print(f"[Supabase] log_arb_signal error: {e}")
+        return False
+
+
 
 async def check_and_close_open_trades(send_alert_fn=None) -> list:
     url, _ = get_credentials()
