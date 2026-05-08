@@ -1,49 +1,41 @@
-"""This file saves every signal to Supabase and tracks your paper 
-trading performance. Every time the bot spots an opportunity it logs it — 
-so at the end of the week you can look back and see how many signals were correct."""
-
 import os
+import aiohttp
 from datetime import datetime, timezone
 from typing import Optional
-from supabase import create_client, Client
-os.environ.pop("https_proxy", None)
-os.environ.pop("http_proxy", None)
-os.environ.pop("HTTPS_PROXY", None)
-os.environ.pop("HTTP_PROXY", None)
 
-_client: Optional[Client] = None
+SUPABASE_URL = None
+SUPABASE_KEY = None
 
-TAKE_PROFIT = 0.15   # close if price moves +0.15 in our favor
-STOP_LOSS = 0.08     # close if price moves -0.08 against us
+TAKE_PROFIT = 0.15
+STOP_LOSS = 0.08
 
 
-def get_client() -> Optional[Client]:
-    global _client
-    if _client:
-        return _client
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_KEY")
-    if not url or not key:
-        print("[Supabase] Missing credentials in .env")
-        return None
-    try:
-        from supabase.client import ClientOptions
-        _client = create_client(url, key, options=ClientOptions(postgrest_client_timeout=10))
-    except Exception:
-        _client = create_client(url, key)
-    return _client
+def get_credentials():
+    global SUPABASE_URL, SUPABASE_KEY
+    if not SUPABASE_URL:
+        SUPABASE_URL = os.getenv("SUPABASE_URL")
+        SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+    return SUPABASE_URL, SUPABASE_KEY
+
+
+def headers():
+    _, key = get_credentials()
+    return {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation"
+    }
 
 
 async def log_signal(signal) -> bool:
-    """Save a new signal to the signals table."""
-    client = get_client()
-    if not client:
+    url, _ = get_credentials()
+    if not url:
         return False
     try:
         target = round(min(signal.entry_price + TAKE_PROFIT, 0.95), 4)
         stop = round(max(signal.entry_price - STOP_LOSS, 0.02), 4)
-
-        client.table("signals").insert({
+        payload = {
             "asset": signal.asset,
             "market_question": signal.market_question,
             "market_id": signal.market_id,
@@ -60,106 +52,101 @@ async def log_signal(signal) -> bool:
             "paper_entry": signal.entry_price,
             "paper_target": target,
             "paper_stop": stop,
-        }).execute()
-        print(f"[Supabase] Signal logged: {signal.signal_type} {signal.asset}")
-        return True
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{url}/rest/v1/signals",
+                json=payload,
+                headers=headers(),
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status in (200, 201):
+                    print(f"[Supabase] Signal logged: {signal.signal_type} {signal.asset}")
+                    return True
+                else:
+                    text = await resp.text()
+                    print(f"[Supabase] Log error {resp.status}: {text}")
+                    return False
     except Exception as e:
-        print(f"[Supabase] Error logging signal: {e}")
+        print(f"[Supabase] log_signal error: {e}")
         return False
 
 
-async def _close_trade_internal(client: Client, trade: dict, exit_price: float, reason: str) -> dict:
-    """Internal — closes a trade and returns result info for Telegram notification."""
-    entry = trade["paper_entry"]
-    pnl = round(exit_price - entry, 4)
-    pnl_pct = round(pnl / entry * 100, 2)
-
-    client.table("signals").update({
-        "status": "CLOSED",
-        "paper_result": exit_price,
-        "pnl": pnl,
-        "pnl_pct": pnl_pct,
-        "close_reason": reason,
-        "closed_at": datetime.now(timezone.utc).isoformat(),
-    }).eq("id", trade["id"]).execute()
-
-    return {
-        "trade": trade,
-        "exit_price": exit_price,
-        "pnl": pnl,
-        "pnl_pct": pnl_pct,
-        "reason": reason,
-    }
-
-
 async def check_and_close_open_trades(send_alert_fn=None) -> list:
-    """
-    The auto-close engine.
-    
-    Runs on a loop. For every open trade:
-    - Fetches the current market price from Polymarket
-    - Checks if target or stop has been hit
-    - Closes automatically and sends Telegram notification
-    
-    Returns list of trades that were closed this cycle.
-    """
-    from core.polymarket import fetch_prices
-    import aiohttp
-
-    client = get_client()
-    if not client:
+    url, _ = get_credentials()
+    if not url:
         return []
 
     try:
-        result = client.table("signals").select("*").eq("status", "OPEN").execute()
-        open_trades = result.data
-    except Exception as e:
-        print(f"[AutoClose] Error fetching open trades: {e}")
-        return []
+        async with aiohttp.ClientSession() as session:
+            # fetch open trades
+            async with session.get(
+                f"{url}/rest/v1/signals",
+                params={"status": "eq.OPEN", "select": "*"},
+                headers=headers(),
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status != 200:
+                    return []
+                open_trades = await resp.json()
 
-    if not open_trades:
-        return []
+            if not open_trades:
+                return []
 
-    closed_this_cycle = []
+            from core.polymarket import get_markets_with_prices
+            markets = await get_markets_with_prices()
+            price_map = {m["condition_id"]: m for m in markets}
 
-    async with aiohttp.ClientSession() as session:
-        for trade in open_trades:
-            condition_id = trade.get("market_id")
-            if not condition_id:
-                continue
+            closed_this_cycle = []
 
-            prices = await fetch_prices(session, condition_id)
-            if not prices:
-                continue
+            for trade in open_trades:
+                condition_id = trade.get("market_id")
+                market = price_map.get(condition_id)
+                if not market:
+                    continue
 
-            signal_type = trade["signal_type"]
-            entry = trade["paper_entry"]
-            target = trade["paper_target"]
-            stop = trade["paper_stop"]
+                signal_type = trade["signal_type"]
+                entry = trade["paper_entry"]
+                target = trade["paper_target"]
+                stop = trade["paper_stop"]
 
-            # current price depends on what we bought
-            if signal_type == "BUY_YES":
-                current_price = prices["yes_price"]
-            else:
-                current_price = prices["no_price"]
+                current_price = market["yes_price"] if signal_type == "BUY_YES" else market["no_price"]
 
-            close_reason = None
+                close_reason = None
+                if current_price >= target:
+                    close_reason = "TARGET_HIT"
+                elif current_price <= stop:
+                    close_reason = "STOP_HIT"
 
-            if current_price >= target:
-                close_reason = "TARGET_HIT"
-            elif current_price <= stop:
-                close_reason = "STOP_HIT"
+                if not close_reason:
+                    continue
 
-            if close_reason:
-                result = await _close_trade_internal(client, trade, current_price, close_reason)
-                closed_this_cycle.append(result)
+                pnl = round(current_price - entry, 4)
+                pnl_pct = round(pnl / entry * 100, 2)
+
+                # close in supabase
+                async with session.patch(
+                    f"{url}/rest/v1/signals",
+                    params={"id": f"eq.{trade['id']}"},
+                    json={
+                        "status": "CLOSED",
+                        "paper_result": current_price,
+                        "pnl": pnl,
+                        "pnl_pct": pnl_pct,
+                        "close_reason": close_reason,
+                        "closed_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                    headers=headers(),
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as resp:
+                    if resp.status not in (200, 204):
+                        continue
+
+                closed_this_cycle.append(trade)
 
                 if send_alert_fn:
-                    pnl = result["pnl"]
-                    pnl_pct = result["pnl_pct"]
                     emoji = "✅" if pnl > 0 else "❌"
                     reason_text = "Target hit 🎯" if close_reason == "TARGET_HIT" else "Stop loss hit 🛑"
-
                     msg = (
                         f"{emoji} *Paper trade closed*\n"
                         f"━━━━━━━━━━━━━━━━\n"
@@ -173,68 +160,78 @@ async def check_and_close_open_trades(send_alert_fn=None) -> list:
                     try:
                         await send_alert_fn(msg)
                     except Exception as e:
-                        print(f"[AutoClose] Telegram notify failed: {e}")
+                        print(f"[AutoClose] Telegram error: {e}")
 
                 print(f"[AutoClose] Closed {trade['id']} | {close_reason} | PnL: {pnl:+.4f}")
 
-    return closed_this_cycle
+            return closed_this_cycle
+
+    except Exception as e:
+        print(f"[AutoClose] Error: {e}")
+        return []
 
 
 async def get_paper_stats() -> dict:
-    """Pull performance stats from all closed paper trades."""
-    client = get_client()
-    if not client:
+    url, _ = get_credentials()
+    if not url:
         return {}
     try:
-        result = client.table("signals").select(
-            "pnl, pnl_pct, status, signal_type, confidence, asset, close_reason"
-        ).execute()
-        rows = result.data
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{url}/rest/v1/signals",
+                params={"select": "pnl,pnl_pct,status,signal_type,confidence,asset,close_reason"},
+                headers=headers(),
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status != 200:
+                    return {}
+                rows = await resp.json()
 
         closed = [r for r in rows if r["status"] == "CLOSED" and r["pnl"] is not None]
         open_trades = [r for r in rows if r["status"] == "OPEN"]
 
         if not closed:
-            return {
-                "total_closed": 0,
-                "open_trades": len(open_trades),
-                "message": "No closed trades yet"
-            }
+            return {"total_closed": 0, "open_trades": len(open_trades)}
 
         wins = [r for r in closed if r["pnl"] > 0]
         total_pnl = sum(r["pnl"] for r in closed)
-        win_rate = len(wins) / len(closed) * 100
-        targets_hit = [r for r in closed if r.get("close_reason") == "TARGET_HIT"]
-        stops_hit = [r for r in closed if r.get("close_reason") == "STOP_HIT"]
 
         return {
             "total_closed": len(closed),
             "open_trades": len(open_trades),
             "wins": len(wins),
             "losses": len(closed) - len(wins),
-            "win_rate": round(win_rate, 1),
+            "win_rate": round(len(wins) / len(closed) * 100, 1),
             "total_pnl": round(total_pnl, 4),
             "avg_pnl": round(total_pnl / len(closed), 4),
-            "targets_hit": len(targets_hit),
-            "stops_hit": len(stops_hit),
+            "targets_hit": len([r for r in closed if r.get("close_reason") == "TARGET_HIT"]),
+            "stops_hit": len([r for r in closed if r.get("close_reason") == "STOP_HIT"]),
             "btc_trades": len([r for r in closed if r["asset"] == "BTC"]),
             "eth_trades": len([r for r in closed if r["asset"] == "ETH"]),
         }
     except Exception as e:
-        print(f"[Supabase] Error fetching stats: {e}")
+        print(f"[Supabase] stats error: {e}")
         return {}
 
 
 async def get_open_trades() -> list:
-    """Fetch all currently open paper trades."""
-    client = get_client()
-    if not client:
+    url, _ = get_credentials()
+    if not url:
         return []
     try:
-        result = client.table("signals").select(
-            "id, asset, market_question, signal_type, paper_entry, paper_target, paper_stop, created_at"
-        ).eq("status", "OPEN").execute()
-        return result.data
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{url}/rest/v1/signals",
+                params={
+                    "status": "eq.OPEN",
+                    "select": "id,asset,market_question,signal_type,paper_entry,paper_target,paper_stop,created_at"
+                },
+                headers=headers(),
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status != 200:
+                    return []
+                return await resp.json()
     except Exception as e:
-        print(f"[Supabase] Error fetching open trades: {e}")
+        print(f"[Supabase] get_open_trades error: {e}")
         return []
