@@ -1,21 +1,21 @@
 import asyncio
 import os
-from dotenv import load_dotenv
 import sys
 sys.stdout.reconfigure(line_buffering=True)
 
+from dotenv import load_dotenv
 load_dotenv()
 
 from tgram.bot import send_message, get_application, register_handlers
-from core.scanner import scan_once
+from core.scanner import scan_once, realtime_scan
 from utils.db import check_and_close_open_trades
 
-SCAN_INTERVAL = 15 * 60       # 15 minutes
-AUTOCLOSE_INTERVAL = 3 * 60   # 3 minutes
+SCAN_INTERVAL = 15 * 60      # 15 minutes — momentum + arb
+REALTIME_INTERVAL = 30       # 30 seconds — realtime intramarket
+AUTOCLOSE_INTERVAL = 3 * 60  # 3 minutes — auto close checker
 
 
 async def scanner_loop():
-    """Scan for new signals every 15 minutes."""
     print("[Main] Scanner loop started")
     while True:
         try:
@@ -25,8 +25,18 @@ async def scanner_loop():
         await asyncio.sleep(SCAN_INTERVAL)
 
 
+async def realtime_loop():
+    print("[Main] Realtime loop started")
+    await asyncio.sleep(60)  # wait 1 minute for markets to register reference prices
+    while True:
+        try:
+            await realtime_scan(send_alert_fn=send_message)
+        except Exception as e:
+            print(f"[Main] Realtime error: {e}")
+        await asyncio.sleep(REALTIME_INTERVAL)
+
+
 async def autoclose_loop():
-    """Check open trades every 3 minutes and close if target/stop hit."""
     print("[Main] Auto-close loop started")
     await asyncio.sleep(10)
     while True:
@@ -39,29 +49,27 @@ async def autoclose_loop():
 
 async def main():
     print("[Main] Starting Polymarket Arb Bot...")
-
-    # send startup message
     try:
         await send_message(
             "🤖 *Polymarket Arb Bot started*\n"
             "━━━━━━━━━━━━━━━━\n"
-            "Monitoring BTC and ETH direction markets.\n"
-            "Scanning every 15 minutes.\n"
-            "Auto-close checking every 3 minutes.\n\n"
+            "Running 3 strategies:\n"
+            "⚡ *Pure Arb* — 5m markets (every 15min scan)\n"
+            "📊 *Momentum* — 15m markets (every 15min scan)\n"
+            "🎯 *Realtime* — 5m intramarket (every 30s)\n\n"
             "Commands: /status /stats /open /scan"
         )
     except Exception as e:
         print(f"[Main] Startup message failed: {e}")
 
-    # build telegram app
     app = get_application()
     register_handlers(app)
     await app.initialize()
     await app.start()
 
-    # run all loops concurrently
     await asyncio.gather(
         scanner_loop(),
+        realtime_loop(),
         autoclose_loop(),
         app.updater.start_polling(),
     )

@@ -119,6 +119,51 @@ async def log_arb_signal(signal) -> bool:
         return False
 
 
+async def log_realtime_signal(signal) -> bool:
+    """Save a realtime signal to the signals table."""
+    url, _ = get_credentials()
+    if not url:
+        return False
+    try:
+        target = round(min(signal.entry_price + 0.12, 0.95), 4)
+        stop = round(max(signal.entry_price - 0.06, 0.02), 4)
+        payload = {
+            "asset": signal.asset,
+            "market_question": signal.market_question,
+            "market_id": signal.market_id,
+            "signal_type": signal.signal_type,
+            "entry_price": signal.entry_price,
+            "implied_fair_value": signal.fair_value,
+            "divergence": signal.edge,
+            "momentum_direction": "UP" if signal.signal_type == "BUY_UP" else "DOWN",
+            "momentum_strength": signal.edge,
+            "asset_price": signal.current_price,
+            "confidence": signal.confidence,
+            "reason": signal.reason,
+            "status": "OPEN",
+            "paper_entry": signal.entry_price,
+            "paper_target": target,
+            "paper_stop": stop,
+            "strategy": "REALTIME",
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{url}/rest/v1/signals",
+                json=payload,
+                headers=headers(),
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status in (200, 201):
+                    print(f"[Supabase] Realtime signal logged: {signal.signal_type} {signal.asset}")
+                    return True
+                else:
+                    text = await resp.text()
+                    print(f"[Supabase] Realtime log error {resp.status}: {text}")
+                    return False
+    except Exception as e:
+        print(f"[Supabase] log_realtime_signal error: {e}")
+        return False
+
 
 async def check_and_close_open_trades(send_alert_fn=None) -> list:
     url, _ = get_credentials()
