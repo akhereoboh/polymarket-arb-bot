@@ -10,8 +10,9 @@ ASSETS = {
     "eth": "ETH",
     "sol": "SOL",
     "xrp": "XRP",
+    "doge": "DOGE",
+    "bnb": "BNB",
 }
-
 # Only 15m and 4h timeframes — 5m is too fast for our strategy
 ALLOWED_TIMEFRAMES = ["15m", "4h"]
 

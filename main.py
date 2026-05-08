@@ -1,6 +1,8 @@
 import asyncio
 import os
 from dotenv import load_dotenv
+import sys
+sys.stdout.reconfigure(line_buffering=True)
 
 load_dotenv()
 
