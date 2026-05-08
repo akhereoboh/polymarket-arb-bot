@@ -16,8 +16,7 @@ ASSETS = {
     "bnb": "BNB",
 }
 
-TIMEFRAMES = ["15m"]  # focus on 15m only for pure arb
-
+TIMEFRAMES = ["15m", "5m"]
 
 async def fetch_active_updown_markets(session: aiohttp.ClientSession) -> list[dict]:
     """Fetch all active 15m updown markets."""
