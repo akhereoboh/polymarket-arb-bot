@@ -37,8 +37,9 @@ def evaluate_arb(market: dict) -> Optional[ArbSignal]:
     Check if a 5m market has an arbitrage opportunity.
     Returns ArbSignal if total cost < threshold, else None.
     """
-    up_price = market.get("yes_price")    # UP = yes_price in our structure
-    down_price = market.get("no_price")   # DOWN = no_price
+    # use actual ask prices — what you really pay
+    up_price = market.get("up_ask") or market.get("yes_price")
+    down_price = market.get("down_ask") or market.get("no_price")
     timeframe = market.get("timeframe", "")
 
     if up_price is None or down_price is None:

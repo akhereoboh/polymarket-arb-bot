@@ -95,6 +95,7 @@ async def fetch_active_updown_markets(session: aiohttp.ClientSession) -> list[di
                     continue
 
                 # map Up/Down to yes/no equivalent
+                # map Up/Down to yes/no equivalent
                 up_price = None
                 down_price = None
                 for label, price in zip(outcome_labels, prices):
@@ -106,6 +107,15 @@ async def fetch_active_updown_markets(session: aiohttp.ClientSession) -> list[di
                 if up_price is None or down_price is None:
                     continue
 
+                # use bestAsk for arb calculation — that's the real buy price
+                best_bid = market.get("bestBid")
+                best_ask = market.get("bestAsk")
+
+                # for arb: we need ask prices for both sides
+                # bestAsk is for the UP token — DOWN ask is approximately 1 - bestBid
+                up_ask = float(best_ask) if best_ask else up_price
+                down_ask = round(1.0 - float(best_bid), 4) if best_bid else down_price
+
                 results.append({
                     "id": market.get("conditionId"),
                     "condition_id": market.get("conditionId"),
@@ -114,12 +124,14 @@ async def fetch_active_updown_markets(session: aiohttp.ClientSession) -> list[di
                     "asset": ASSETS[asset_key],
                     "timeframe": timeframe,
                     "end_date": e.get("endDate"),
-                    "yes_price": up_price,    # Up = YES equivalent
-                    "no_price": down_price,   # Down = NO equivalent
+                    "yes_price": up_price,      # mid price for momentum strategy
+                    "no_price": down_price,     # mid price for momentum strategy
+                    "up_ask": up_ask,           # actual buy price for arb
+                    "down_ask": down_ask,       # actual buy price for arb
                     "spread": round(up_price + down_price - 1.0, 4),
                     "liquidity": market.get("liquidityNum", 0),
-                    "best_bid": market.get("bestBid"),
-                    "best_ask": market.get("bestAsk"),
+                    "best_bid": best_bid,
+                    "best_ask": best_ask,
                 })
 
             print(f"[Polymarket] Active updown markets: {len(results)}")
