@@ -2,24 +2,24 @@ import aiohttp
 import asyncio
 import json
 from typing import Optional
-from datetime import datetime, timezone
 
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 CLOB_BASE = "https://clob.polymarket.com"
 
+# Focus on most liquid markets only
 ASSETS = {
     "btc": "BTC",
     "eth": "ETH",
-    "sol": "SOL",
-    "xrp": "XRP",
-    "doge": "DOGE",
-    "bnb": "BNB",
 }
 
 TIMEFRAMES = ["15m", "5m"]
 
+
 async def fetch_active_updown_markets(session: aiohttp.ClientSession) -> list[dict]:
-    """Fetch all active 15m updown markets."""
+    """
+    Fetch active updown markets using embedded prices from gamma API.
+    Much more reliable than orderbook for price discovery.
+    """
     try:
         async with session.get(
             f"{GAMMA_BASE}/events",
@@ -34,6 +34,7 @@ async def fetch_active_updown_markets(session: aiohttp.ClientSession) -> list[di
             timeout=aiohttp.ClientTimeout(total=15)
         ) as resp:
             if resp.status != 200:
+                print(f"[Polymarket] API error: {resp.status}")
                 return []
 
             events = await resp.json()
@@ -41,6 +42,7 @@ async def fetch_active_updown_markets(session: aiohttp.ClientSession) -> list[di
                 return []
 
             results = []
+
             for e in events:
                 slug = e.get("slug", "")
                 if not e.get("active") or e.get("closed"):
@@ -48,8 +50,13 @@ async def fetch_active_updown_markets(session: aiohttp.ClientSession) -> list[di
                 if "updown" not in slug:
                     continue
 
-                # only 15m timeframe
-                if not any(f"-{tf}-" in slug for tf in TIMEFRAMES):
+                # check timeframe
+                timeframe = None
+                for tf in TIMEFRAMES:
+                    if f"-{tf}-" in slug:
+                        timeframe = tf
+                        break
+                if not timeframe:
                     continue
 
                 # check asset
@@ -70,126 +77,90 @@ async def fetch_active_updown_markets(session: aiohttp.ClientSession) -> list[di
                 if not condition_id:
                     continue
 
-                # parse end time
-                end_date = e.get("endDate") or market.get("endDate")
+                # extract embedded prices directly from gamma API
+                try:
+                    outcome_prices = json.loads(market.get("outcomePrices", "[]"))
+                    outcomes = json.loads(market.get("outcomes", "[]"))
+                    token_ids = json.loads(market.get("clobTokenIds", "[]"))
+                except Exception:
+                    continue
+
+                if not outcome_prices or not outcomes:
+                    continue
+
+                up_price = None
+                down_price = None
+                for label, price in zip(outcomes, outcome_prices):
+                    if label.lower() == "up":
+                        up_price = float(price)
+                    elif label.lower() == "down":
+                        down_price = float(price)
+
+                if up_price is None or down_price is None:
+                    continue
+
+                total = round(up_price + down_price, 4)
+                gap = round(1.0 - total, 4)
 
                 results.append({
                     "condition_id": condition_id,
                     "question": e.get("title", ""),
                     "slug": slug,
                     "asset": ASSETS[asset_key],
-                    "timeframe": "15m",
-                    "end_date": end_date,
+                    "timeframe": timeframe,
+                    "end_date": e.get("endDate") or market.get("endDate"),
                     "event_id": e.get("id"),
+                    "up_ask": up_price,
+                    "down_ask": down_price,
+                    "total": total,
+                    "gap": gap,
+                    "token_ids": token_ids,
+                    "liquidity": market.get("liquidityNum", 0),
                 })
 
+            print(f"[Polymarket] Active markets found: {len(results)}")
             return results
 
     except Exception as ex:
-        print(f"[Polymarket] fetch markets error: {ex}")
+        print(f"[Polymarket] fetch error: {ex}")
         return []
-
-
-async def fetch_clob_orderbook_prices(
-    session: aiohttp.ClientSession,
-    condition_id: str
-) -> Optional[dict]:
-    """
-    Fetch live ask prices from CLOB orderbook.
-    We use ASK prices because that's what you pay when buying.
-    Returns up_ask and down_ask.
-    """
-    try:
-        # fetch the market data which includes tokens
-        async with session.get(
-            f"{CLOB_BASE}/markets/{condition_id}",
-            timeout=aiohttp.ClientTimeout(total=5)
-        ) as resp:
-            if resp.status != 200:
-                return None
-            data = await resp.json()
-
-        tokens = data.get("tokens", [])
-        if len(tokens) < 2:
-            return None
-
-        up_ask = None
-        down_ask = None
-
-        for token in tokens:
-            outcome = token.get("outcome", "").lower()
-            token_id = token.get("token_id")
-            if not token_id:
-                continue
-
-            # fetch orderbook for this token
-            async with session.get(
-                f"{CLOB_BASE}/book",
-                params={"token_id": token_id},
-                timeout=aiohttp.ClientTimeout(total=5)
-            ) as book_resp:
-                if book_resp.status != 200:
-                    continue
-                book = await book_resp.json()
-
-            # best ask = lowest sell price = what you pay to buy
-            asks = book.get("asks", [])
-            if not asks:
-                # fallback to market price
-                price = token.get("price")
-                if price:
-                    if outcome == "up":
-                        up_ask = float(price)
-                    elif outcome == "down":
-                        down_ask = float(price)
-                continue
-
-            # asks are sorted ascending — first is best (lowest)
-            best_ask = float(asks[0]["price"])
-
-            if outcome == "up":
-                up_ask = best_ask
-            elif outcome == "down":
-                down_ask = best_ask
-
-        if up_ask is None or down_ask is None:
-            return None
-
-        total = round(up_ask + down_ask, 4)
-
-        return {
-            "up_ask": up_ask,
-            "down_ask": down_ask,
-            "total": total,
-            "gap": round(1.0 - total, 4),
-        }
-
-    except Exception as ex:
-        print(f"[Polymarket] orderbook error {condition_id}: {ex}")
-        return None
 
 
 async def get_markets_with_orderbook() -> list[dict]:
     """
     Main entry point.
-    Returns active 15m markets with live orderbook ask prices.
+    Returns active updown markets with embedded prices.
+    No separate orderbook call needed for price discovery.
     """
     async with aiohttp.ClientSession() as session:
-        markets = await fetch_active_updown_markets(session)
-        if not markets:
-            return []
+        return await fetch_active_updown_markets(session)
 
-        # fetch orderbook prices for all markets in parallel
-        price_tasks = [
-            fetch_clob_orderbook_prices(session, m["condition_id"])
-            for m in markets
-        ]
-        prices_list = await asyncio.gather(*price_tasks, return_exceptions=True)
 
-        enriched = []
-        for market, prices in zip(markets, prices_list):
-            if isinstance(prices, dict):
-                market.update(prices)
-                enriched.append(market)
-
-        return enriched
+async def fetch_clob_orderbook(token_id: str) -> Optional[dict]:
+    """
+    Fetch live orderbook for a specific token.
+    Used when we need real-time ask depth for execution.
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{CLOB_BASE}/book",
+                params={"token_id": token_id},
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                asks = data.get("asks", [])
+                bids = data.get("bids", [])
+                best_ask = float(asks[0]["price"]) if asks else None
+                best_bid = float(bids[0]["price"]) if bids else None
+                return {
+                    "best_ask": best_ask,
+                    "best_bid": best_bid,
+                    "asks": asks[:5],
+                    "bids": bids[:5],
+                }
+    except Exception as ex:
+        print(f"[Polymarket] orderbook error {token_id}: {ex}")
+        return None
