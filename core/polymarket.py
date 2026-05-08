@@ -49,7 +49,7 @@ async def fetch_active_updown_markets(session: aiohttp.ClientSession) -> list[di
                     continue
 
                 # only 15m timeframe
-                if "-15m-" not in slug:
+                if not any(f"-{tf}-" in slug for tf in TIMEFRAMES):
                     continue
 
                 # check asset
