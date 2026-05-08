@@ -27,6 +27,8 @@ async def scan_once(send_alert_fn=None) -> list:
     markets = await get_markets_with_orderbook()
     if not markets:
         return []
+    best = min(markets, key=lambda m: m.get("total", 99))
+    print(f"[Scanner] {len(markets)} markets | Best: {best['asset']} {best['timeframe']} total={best.get('total')} gap={best.get('gap')}")
 
     for market in markets:
         condition_id = market["condition_id"]
