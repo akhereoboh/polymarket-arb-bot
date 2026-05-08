@@ -10,6 +10,8 @@ BINANCE_BASE = "https://api.binance.com/api/v3"
 SYMBOLS = {
     "BTC": "BTCUSDT",
     "ETH": "ETHUSDT",
+    "SOL": "SOLUSDT",
+    "XRP": "XRPUSDT",
 }
 
 
