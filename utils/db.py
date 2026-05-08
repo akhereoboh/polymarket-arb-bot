@@ -1,13 +1,9 @@
 import os
 import aiohttp
 from datetime import datetime, timezone
-from typing import Optional
 
 SUPABASE_URL = None
 SUPABASE_KEY = None
-
-TAKE_PROFIT = 0.15
-STOP_LOSS = 0.08
 
 
 def get_credentials():
@@ -28,206 +24,97 @@ def headers():
     }
 
 
-async def log_signal(signal) -> bool:
-    url, _ = get_credentials()
-    if not url:
-        return False
-    try:
-        target = round(min(signal.entry_price + TAKE_PROFIT, 0.95), 4)
-        stop = round(max(signal.entry_price - STOP_LOSS, 0.02), 4)
-        payload = {
-            "asset": signal.asset,
-            "market_question": signal.market_question,
-            "market_id": signal.market_id,
-            "signal_type": signal.signal_type,
-            "entry_price": signal.entry_price,
-            "implied_fair_value": signal.fair_value,
-            "divergence": signal.divergence,
-            "momentum_direction": signal.momentum_direction,
-            "momentum_strength": signal.momentum_strength,
-            "asset_price": signal.asset_price,
-            "confidence": signal.confidence,
-            "reason": signal.reason,
-            "status": "OPEN",
-            "paper_entry": signal.entry_price,
-            "paper_target": target,
-            "paper_stop": stop,
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{url}/rest/v1/signals",
-                json=payload,
-                headers=headers(),
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as resp:
-                if resp.status in (200, 201):
-                    print(f"[Supabase] Signal logged: {signal.signal_type} {signal.asset}")
-                    return True
-                else:
-                    text = await resp.text()
-                    print(f"[Supabase] Log error {resp.status}: {text}")
-                    return False
-    except Exception as e:
-        print(f"[Supabase] log_signal error: {e}")
-        return False
-
-async def log_arb_signal(signal) -> bool:
-    """Save a pure arb signal to the signals table."""
+async def log_arb_trade(opp: dict) -> bool:
+    """Log a new arb opportunity to Supabase."""
     url, _ = get_credentials()
     if not url:
         return False
     try:
         payload = {
-            "asset": signal.asset,
-            "market_question": signal.market_question,
-            "market_id": signal.market_id,
-            "signal_type": "BUY_BOTH",
-            "entry_price": signal.total_cost,
-            "implied_fair_value": 1.0,
-            "divergence": round(1.0 - signal.total_cost, 4),
-            "momentum_direction": "ARB",
-            "momentum_strength": signal.profit_pct / 100,
-            "asset_price": 0,
-            "confidence": signal.confidence,
-            "reason": f"Pure arb: UP {signal.up_price} + DOWN {signal.down_price} = {signal.total_cost}",
+            "asset": opp["asset"],
+            "market_question": opp["market_question"],
+            "market_id": opp["market_id"],
+            "slug": opp["slug"],
+            "timeframe": opp["timeframe"],
+            "up_price": opp["up_price"],
+            "down_price": opp["down_price"],
+            "total_cost": opp["total_cost"],
+            "arb_profit": opp["arb_profit"],
+            "shares": opp["shares"],
+            "total_invested": opp["total_invested"],
+            "expected_payout": opp["expected_payout"],
+            "expected_profit": opp["expected_profit"],
             "status": "OPEN",
-            "paper_entry": signal.total_cost,
-            "paper_target": 1.0,
-            "paper_stop": signal.total_cost - 0.02,
-            "strategy": "PURE_ARB",
-            "up_price": signal.up_price,
-            "down_price": signal.down_price,
-            "total_cost": signal.total_cost,
-            "arb_profit": signal.expected_profit,
+            "market_end_time": opp["market_end_time"],
         }
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                f"{url}/rest/v1/signals",
+                f"{url}/rest/v1/arb_trades",
                 json=payload,
                 headers=headers(),
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
                 if resp.status in (200, 201):
-                    print(f"[Supabase] Arb signal logged: {signal.asset} {signal.timeframe}")
+                    print(f"[Supabase] Arb trade logged: {opp['asset']}")
                     return True
-                else:
-                    text = await resp.text()
-                    print(f"[Supabase] Arb log error {resp.status}: {text}")
-                    return False
+                text = await resp.text()
+                print(f"[Supabase] Log error {resp.status}: {text}")
+                return False
     except Exception as e:
-        print(f"[Supabase] log_arb_signal error: {e}")
+        print(f"[Supabase] log_arb_trade error: {e}")
         return False
 
 
-async def log_realtime_signal(signal) -> bool:
-    """Save a realtime signal to the signals table."""
-    url, _ = get_credentials()
-    if not url:
-        return False
-    try:
-        target = round(min(signal.entry_price + 0.12, 0.95), 4)
-        stop = round(max(signal.entry_price - 0.06, 0.02), 4)
-        payload = {
-            "asset": signal.asset,
-            "market_question": signal.market_question,
-            "market_id": signal.market_id,
-            "signal_type": signal.signal_type,
-            "entry_price": signal.entry_price,
-            "implied_fair_value": signal.fair_value,
-            "divergence": signal.edge,
-            "momentum_direction": "UP" if signal.signal_type == "BUY_UP" else "DOWN",
-            "momentum_strength": signal.edge,
-            "asset_price": signal.current_price,
-            "confidence": signal.confidence,
-            "reason": signal.reason,
-            "status": "OPEN",
-            "paper_entry": signal.entry_price,
-            "paper_target": target,
-            "paper_stop": stop,
-            "strategy": "REALTIME",
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{url}/rest/v1/signals",
-                json=payload,
-                headers=headers(),
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as resp:
-                if resp.status in (200, 201):
-                    print(f"[Supabase] Realtime signal logged: {signal.signal_type} {signal.asset}")
-                    return True
-                else:
-                    text = await resp.text()
-                    print(f"[Supabase] Realtime log error {resp.status}: {text}")
-                    return False
-    except Exception as e:
-        print(f"[Supabase] log_realtime_signal error: {e}")
-        return False
-
-
-async def check_and_close_open_trades(send_alert_fn=None) -> list:
+async def settle_expired_trades(send_alert_fn=None) -> list:
+    """
+    Check all OPEN arb trades whose market_end_time has passed.
+    Since we bought both sides, payout is always SHARES * 1.0.
+    Profit = payout - total_invested. Always positive if arb was valid.
+    """
     url, _ = get_credentials()
     if not url:
         return []
 
+    now = datetime.now(timezone.utc).isoformat()
+
     try:
         async with aiohttp.ClientSession() as session:
-            # fetch open trades
+            # fetch open trades that have expired
             async with session.get(
-                f"{url}/rest/v1/signals",
-                params={"status": "eq.OPEN", "select": "*"},
+                f"{url}/rest/v1/arb_trades",
+                params={
+                    "status": "eq.OPEN",
+                    "market_end_time": f"lt.{now}",
+                    "select": "*"
+                },
                 headers=headers(),
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
                 if resp.status != 200:
                     return []
-                open_trades = await resp.json()
+                trades = await resp.json()
 
-            if not open_trades:
-                return []
+        if not trades:
+            return []
 
-            from core.polymarket import get_markets_with_prices
-            markets = await get_markets_with_prices()
-            price_map = {m["condition_id"]: m for m in markets}
+        settled = []
 
-            closed_this_cycle = []
+        for trade in trades:
+            shares = trade.get("shares", 5)
+            total_invested = trade.get("total_invested", 0)
+            expected_payout = shares * 1.0
+            actual_profit = round(expected_payout - total_invested, 4)
+            profit_pct = round(actual_profit / total_invested * 100, 4)
 
-            for trade in open_trades:
-                condition_id = trade.get("market_id")
-                market = price_map.get(condition_id)
-                if not market:
-                    continue
-
-                signal_type = trade["signal_type"]
-                entry = trade["paper_entry"]
-                target = trade["paper_target"]
-                stop = trade["paper_stop"]
-
-                current_price = market["yes_price"] if signal_type == "BUY_YES" else market["no_price"]
-
-                close_reason = None
-                if current_price >= target:
-                    close_reason = "TARGET_HIT"
-                elif current_price <= stop:
-                    close_reason = "STOP_HIT"
-
-                if not close_reason:
-                    continue
-
-                pnl = round(current_price - entry, 4)
-                pnl_pct = round(pnl / entry * 100, 2)
-
-                # close in supabase
+            async with aiohttp.ClientSession() as session:
                 async with session.patch(
-                    f"{url}/rest/v1/signals",
+                    f"{url}/rest/v1/arb_trades",
                     params={"id": f"eq.{trade['id']}"},
                     json={
-                        "status": "CLOSED",
-                        "paper_result": current_price,
-                        "pnl": pnl,
-                        "pnl_pct": pnl_pct,
-                        "close_reason": close_reason,
-                        "closed_at": datetime.now(timezone.utc).isoformat(),
+                        "status": "SETTLED",
+                        "actual_payout": expected_payout,
+                        "actual_profit": actual_profit,
+                        "closed_at": now,
                     },
                     headers=headers(),
                     timeout=aiohttp.ClientTimeout(total=10)
@@ -235,44 +122,46 @@ async def check_and_close_open_trades(send_alert_fn=None) -> list:
                     if resp.status not in (200, 204):
                         continue
 
-                closed_this_cycle.append(trade)
+            settled.append(trade)
+            print(
+                f"[Settle] {trade['asset']} settled | "
+                f"Invested: ${total_invested} | "
+                f"Profit: ${actual_profit} ({profit_pct}%)"
+            )
 
-                if send_alert_fn:
-                    emoji = "✅" if pnl > 0 else "❌"
-                    reason_text = "Target hit 🎯" if close_reason == "TARGET_HIT" else "Stop loss hit 🛑"
-                    msg = (
-                        f"{emoji} *Paper trade closed*\n"
-                        f"━━━━━━━━━━━━━━━━\n"
-                        f"*{trade['asset']}* — {trade['signal_type'].replace('_', ' ')}\n"
-                        f"*Reason:* {reason_text}\n\n"
-                        f"*Entry:* ${entry:.3f}\n"
-                        f"*Exit:* ${current_price:.3f}\n"
-                        f"*PnL:* {pnl:+.4f} ({pnl_pct:+.2f}%)\n\n"
-                        f"_{trade['market_question']}_"
-                    )
-                    try:
-                        await send_alert_fn(msg)
-                    except Exception as e:
-                        print(f"[AutoClose] Telegram error: {e}")
+            if send_alert_fn:
+                msg = (
+                    f"✅ *Arb trade settled*\n"
+                    f"━━━━━━━━━━━━━━━━\n"
+                    f"*Asset:* {trade['asset']}\n"
+                    f"*Market:* {trade['market_question']}\n\n"
+                    f"*Invested:* ${total_invested:.4f}\n"
+                    f"*Payout:* ${expected_payout:.4f}\n"
+                    f"*Profit:* ${actual_profit:.4f} ({profit_pct:.2f}%)\n\n"
+                    f"_Both sides bought — direction didn't matter_ 🎯"
+                )
+                try:
+                    await send_alert_fn(msg)
+                except Exception as e:
+                    print(f"[Settle] Telegram error: {e}")
 
-                print(f"[AutoClose] Closed {trade['id']} | {close_reason} | PnL: {pnl:+.4f}")
-
-            return closed_this_cycle
+        return settled
 
     except Exception as e:
-        print(f"[AutoClose] Error: {e}")
+        print(f"[Settle] Error: {e}")
         return []
 
 
-async def get_paper_stats() -> dict:
+async def get_arb_stats() -> dict:
+    """Overall paper trading performance."""
     url, _ = get_credentials()
     if not url:
         return {}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{url}/rest/v1/signals",
-                params={"select": "pnl,pnl_pct,status,signal_type,confidence,asset,close_reason"},
+                f"{url}/rest/v1/arb_trades",
+                params={"select": "actual_profit,total_invested,status,asset"},
                 headers=headers(),
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
@@ -280,44 +169,43 @@ async def get_paper_stats() -> dict:
                     return {}
                 rows = await resp.json()
 
-        closed = [r for r in rows if r["status"] == "CLOSED" and r["pnl"] is not None]
+        settled = [r for r in rows if r["status"] == "SETTLED"]
         open_trades = [r for r in rows if r["status"] == "OPEN"]
 
-        if not closed:
-            return {"total_closed": 0, "open_trades": len(open_trades)}
+        if not settled:
+            return {
+                "total_settled": 0,
+                "open_trades": len(open_trades),
+                "message": "No settled trades yet"
+            }
 
-        wins = [r for r in closed if r["pnl"] > 0]
-        total_pnl = sum(r["pnl"] for r in closed)
+        total_profit = sum(r["actual_profit"] for r in settled if r["actual_profit"])
+        total_invested = sum(r["total_invested"] for r in settled if r["total_invested"])
 
         return {
-            "total_closed": len(closed),
+            "total_settled": len(settled),
             "open_trades": len(open_trades),
-            "wins": len(wins),
-            "losses": len(closed) - len(wins),
-            "win_rate": round(len(wins) / len(closed) * 100, 1),
-            "total_pnl": round(total_pnl, 4),
-            "avg_pnl": round(total_pnl / len(closed), 4),
-            "targets_hit": len([r for r in closed if r.get("close_reason") == "TARGET_HIT"]),
-            "stops_hit": len([r for r in closed if r.get("close_reason") == "STOP_HIT"]),
-            "btc_trades": len([r for r in closed if r["asset"] == "BTC"]),
-            "eth_trades": len([r for r in closed if r["asset"] == "ETH"]),
+            "total_profit": round(total_profit, 4),
+            "total_invested": round(total_invested, 4),
+            "avg_profit": round(total_profit / len(settled), 4),
+            "roi_pct": round(total_profit / total_invested * 100, 4) if total_invested else 0,
         }
     except Exception as e:
         print(f"[Supabase] stats error: {e}")
         return {}
 
 
-async def get_open_trades() -> list:
+async def get_open_arb_trades() -> list:
     url, _ = get_credentials()
     if not url:
         return []
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{url}/rest/v1/signals",
+                f"{url}/rest/v1/arb_trades",
                 params={
                     "status": "eq.OPEN",
-                    "select": "id,asset,market_question,signal_type,paper_entry,paper_target,paper_stop,created_at"
+                    "select": "id,asset,market_question,total_cost,expected_profit,market_end_time,created_at"
                 },
                 headers=headers(),
                 timeout=aiohttp.ClientTimeout(total=10)
@@ -326,5 +214,5 @@ async def get_open_trades() -> list:
                     return []
                 return await resp.json()
     except Exception as e:
-        print(f"[Supabase] get_open_trades error: {e}")
+        print(f"[Supabase] open trades error: {e}")
         return []

@@ -1,136 +1,113 @@
 import asyncio
-import time
-from core.polymarket import get_markets_with_prices
-from core.binance_feed import get_asset_data
-from core.chainlink import get_prices_bulk
-from core.signal_engine import evaluate_market, format_signal_message
-from core.pure_arb import evaluate_arb, format_arb_message
-from core.realtime_strategy import evaluate_realtime, format_realtime_message
-from utils.db import log_signal, log_arb_signal, log_realtime_signal
+import os
+from datetime import datetime, timezone
+from core.polymarket import get_markets_with_orderbook
+from utils.db import log_arb_trade
 
-_momentum_fired: dict[str, float] = {}
-_arb_fired: dict[str, float] = {}
-_realtime_fired: dict[str, float] = {}
+ARB_THRESHOLD = float(os.getenv("ARB_THRESHOLD", "0.991"))
+SHARES = int(os.getenv("ORDER_SIZE", "5"))
 
-MOMENTUM_COOLDOWN = 900
-ARB_COOLDOWN = 300
-REALTIME_COOLDOWN = 60   # 1 minute cooldown for realtime signals
+# track which markets we already entered this cycle
+_traded_markets: set = set()
+
+
+def reset_traded_markets():
+    """Call this when a new market cycle starts."""
+    global _traded_markets
+    _traded_markets = set()
 
 
 async def scan_once(send_alert_fn=None) -> list:
-    """Full scan — runs every 15 minutes for momentum and arb."""
-    all_signals = []
-    markets = await get_markets_with_prices()
+    """
+    One scan cycle — check all active 15m markets for arb opportunity.
+    Runs every 1 second.
+    """
+    opportunities = []
+
+    markets = await get_markets_with_orderbook()
     if not markets:
-        print("[Scanner] No active markets found")
         return []
 
-    markets_5m = [m for m in markets if m.get("timeframe") == "5m"]
-    markets_15m = [m for m in markets if m.get("timeframe") == "15m"]
-    markets_4h = [m for m in markets if m.get("timeframe") == "4h"]
+    for market in markets:
+        condition_id = market["condition_id"]
+        up_ask = market.get("up_ask")
+        down_ask = market.get("down_ask")
+        total = market.get("total")
 
-    print(f"[Scanner] Markets — 5m:{len(markets_5m)} 15m:{len(markets_15m)} 4h:{len(markets_4h)}")
-
-    # ── STRATEGY 1: PURE ARB on 5m ──────────────────────────────────
-    for market in markets_5m:
-        signal = evaluate_arb(market)
-        if signal is None:
-            continue
-        last = _arb_fired.get(signal.market_id, 0)
-        if time.time() - last < ARB_COOLDOWN:
-            continue
-        _arb_fired[signal.market_id] = time.time()
-        all_signals.append(("ARB", signal))
-        print(f"[Scanner] ARB → {signal.asset} | Cost:{signal.total_cost:.4f} | Profit:{signal.profit_pct:.2f}%")
-        if send_alert_fn:
-            try:
-                await send_alert_fn(format_arb_message(signal))
-            except Exception as e:
-                print(f"[Scanner] Telegram error: {e}")
-        await log_arb_signal(signal)
-
-    # ── STRATEGY 2: MOMENTUM on 15m + 4h ────────────────────────────
-    momentum_markets = markets_15m + markets_4h
-    if momentum_markets:
-        assets_needed = list(set(m["asset"] for m in momentum_markets))
-        asset_results = await asyncio.gather(*[get_asset_data(a) for a in assets_needed])
-        asset_map = {a: d for a, d in zip(assets_needed, asset_results) if d}
-
-        for market in momentum_markets:
-            asset_data = asset_map.get(market["asset"])
-            if not asset_data:
-                continue
-            signal = evaluate_market(market, asset_data)
-            if signal is None:
-                continue
-            last = _momentum_fired.get(signal.market_id, 0)
-            if time.time() - last < MOMENTUM_COOLDOWN:
-                continue
-            _momentum_fired[signal.market_id] = time.time()
-            all_signals.append(("MOMENTUM", signal))
-            print(f"[Scanner] MOMENTUM → {signal.signal_type} {signal.asset} | Edge:{abs(signal.divergence)*100:.1f}%")
-            if send_alert_fn:
-                try:
-                    await send_alert_fn(format_signal_message(signal))
-                except Exception as e:
-                    print(f"[Scanner] Telegram error: {e}")
-            await log_signal(signal)
-
-    if not all_signals:
-        print("[Scanner] No signals this cycle")
-
-    return all_signals
-
-
-async def realtime_scan(send_alert_fn=None) -> list:
-    """
-    Realtime scan — runs every 30 seconds.
-    Only checks 5m markets with time remaining between 30s and 4.5min.
-    """
-    all_signals = []
-
-    markets = await get_markets_with_prices()
-    markets_5m = [m for m in markets if m.get("timeframe") == "5m"]
-
-    if not markets_5m:
-        return []
-
-    # fetch current prices for all assets at once
-    assets = list(set(m["asset"] for m in markets_5m))
-    prices = await get_prices_bulk(assets)
-
-    if not prices:
-        return []
-
-    for market in markets_5m:
-        asset = market["asset"]
-        current_price = prices.get(asset)
-        if not current_price:
+        if up_ask is None or down_ask is None or total is None:
             continue
 
-        signal = evaluate_realtime(market, current_price)
-        if signal is None:
+        # skip if already traded this market this session
+        if condition_id in _traded_markets:
             continue
 
-        last = _realtime_fired.get(signal.market_id, 0)
-        if time.time() - last < REALTIME_COOLDOWN:
+        # pure arb condition
+        if total > ARB_THRESHOLD:
             continue
 
-        _realtime_fired[signal.market_id] = time.time()
-        all_signals.append(("REALTIME", signal))
+        # opportunity found
+        _traded_markets.add(condition_id)
+
+        total_invested = round(total * SHARES, 4)
+        expected_payout = round(1.0 * SHARES, 4)
+        expected_profit = round(expected_payout - total_invested, 4)
+        profit_pct = round(expected_profit / total_invested * 100, 4)
+
+        opportunity = {
+            "asset": market["asset"],
+            "market_question": market["question"],
+            "market_id": condition_id,
+            "slug": market["slug"],
+            "timeframe": market["timeframe"],
+            "up_price": up_ask,
+            "down_price": down_ask,
+            "total_cost": total,
+            "arb_profit": market.get("gap"),
+            "shares": SHARES,
+            "total_invested": total_invested,
+            "expected_payout": expected_payout,
+            "expected_profit": expected_profit,
+            "profit_pct": profit_pct,
+            "market_end_time": market.get("end_date"),
+        }
+
+        opportunities.append(opportunity)
 
         print(
-            f"[Realtime] SIGNAL → {signal.signal_type} {signal.asset} | "
-            f"Edge:{signal.edge*100:.1f}% | "
-            f"{signal.seconds_remaining:.0f}s left"
+            f"[ARB] OPPORTUNITY → {market['asset']} | "
+            f"UP:{up_ask} + DOWN:{down_ask} = {total} | "
+            f"Gap:{market.get('gap')} | "
+            f"Profit/trade: ${expected_profit}"
         )
 
+        # log to supabase
+        await log_arb_trade(opportunity)
+
+        # send telegram alert
         if send_alert_fn:
+            msg = format_arb_alert(opportunity)
             try:
-                await send_alert_fn(format_realtime_message(signal))
+                await send_alert_fn(msg)
             except Exception as e:
-                print(f"[Realtime] Telegram error: {e}")
+                print(f"[Scanner] Telegram error: {e}")
 
-        await log_realtime_signal(signal)
+    return opportunities
 
-    return all_signals
+
+def format_arb_alert(opp: dict) -> str:
+    return (
+        f"🎯 *ARB OPPORTUNITY*\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"*Asset:* {opp['asset']}\n"
+        f"*Market:* {opp['market_question']}\n\n"
+        f"*UP ask:* ${opp['up_price']:.3f}\n"
+        f"*DOWN ask:* ${opp['down_price']:.3f}\n"
+        f"*Total cost:* ${opp['total_cost']:.4f}\n"
+        f"*Gap:* ${opp['arb_profit']:.4f}\n\n"
+        f"*Shares:* {opp['shares']} each side\n"
+        f"*Total invested:* ${opp['total_invested']:.2f}\n"
+        f"*Expected payout:* ${opp['expected_payout']:.2f}\n"
+        f"*Expected profit:* ${opp['expected_profit']:.4f} "
+        f"({opp['profit_pct']:.2f}%)\n\n"
+        f"📋 Paper trade logged to Supabase"
+    )
