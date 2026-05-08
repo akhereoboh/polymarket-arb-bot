@@ -132,6 +132,7 @@ async def fetch_active_updown_markets(session: aiohttp.ClientSession) -> list[di
                     "liquidity": market.get("liquidityNum", 0),
                     "best_bid": best_bid,
                     "best_ask": best_ask,
+                    "clob_token_ids": market.get("clobTokenIds", "[]"),
                 })
 
             print(f"[Polymarket] Active updown markets: {len(results)}")
