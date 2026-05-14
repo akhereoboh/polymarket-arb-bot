@@ -2,40 +2,29 @@ import asyncio
 import os
 import time
 from core.polymarket import get_markets_with_orderbook
+from core.capital_manager import can_open_trade, get_current_capital, get_max_trades
 from utils.db import log_arb_trade
 
 ARB_THRESHOLD = float(os.getenv("ARB_THRESHOLD", "0.991"))
 SHARES = int(os.getenv("ORDER_SIZE", "5"))
 
 _traded_markets: set = set()
-_market_cache: list = []
 _cache_timestamp: float = 0
-CACHE_TTL = 30  # refresh market list every 30 seconds
+_market_cache: list = []
+CACHE_TTL = 30
 
 
 async def get_cached_markets() -> list:
-    """
-    Return cached markets if fresh, otherwise fetch new ones.
-    This prevents hammering the API every second.
-    """
     global _market_cache, _cache_timestamp
-
     now = time.time()
     if now - _cache_timestamp < CACHE_TTL and _market_cache:
         return _market_cache
-
     markets = await get_markets_with_orderbook()
     if markets:
         _market_cache = markets
         _cache_timestamp = now
         print(f"[Scanner] Cache refreshed — {len(markets)} markets")
-
     return _market_cache
-
-
-def reset_traded_markets():
-    global _traded_markets
-    _traded_markets = set()
 
 
 async def scan_once(send_alert_fn=None) -> list:
@@ -67,10 +56,19 @@ async def scan_once(send_alert_fn=None) -> list:
         if total > ARB_THRESHOLD:
             continue
 
+        # check capital before opening trade
+        can_trade, info = await can_open_trade()
+        if not can_trade:
+            print(
+                f"[Scanner] At capacity — {info['open_trades']}/{info['max_trades']} trades open. "
+                f"Capital: ${info['capital']:.4f}"
+            )
+            break
+
         _traded_markets.add(condition_id)
 
         total_invested = round(total * SHARES, 4)
-        expected_payout = round(1.0 * SHARES, 4)
+        expected_payout = float(SHARES)
         expected_profit = round(expected_payout - total_invested, 4)
         profit_pct = round(expected_profit / total_invested * 100, 4)
 
@@ -94,17 +92,25 @@ async def scan_once(send_alert_fn=None) -> list:
 
         opportunities.append(opportunity)
 
+        capital = info["capital"]
+        max_t = info["max_trades"]
+
         print(
             f"[ARB] OPPORTUNITY → {market['asset']} | "
             f"UP:{up_ask} + DOWN:{down_ask} = {total} | "
-            f"Gap:{market.get('gap')} | "
-            f"Profit/trade: ${expected_profit}"
+            f"Profit: ${expected_profit} | "
+            f"Capital: ${capital:.4f} | "
+            f"Trades: {info['open_trades']+1}/{max_t}"
         )
 
         await log_arb_trade(opportunity)
 
         if send_alert_fn:
-            msg = format_arb_alert(opportunity)
+            msg = (
+                format_arb_alert(opportunity) +
+                f"\n\n💰 Capital: ${capital:.4f} | "
+                f"Trade {info['open_trades']+1}/{max_t}"
+            )
             try:
                 await send_alert_fn(msg)
             except Exception as e:
@@ -127,6 +133,5 @@ def format_arb_alert(opp: dict) -> str:
         f"*Total invested:* ${opp['total_invested']:.2f}\n"
         f"*Expected payout:* ${opp['expected_payout']:.2f}\n"
         f"*Expected profit:* ${opp['expected_profit']:.4f} "
-        f"({opp['profit_pct']:.2f}%)\n\n"
-        f"📋 Paper trade logged to Supabase"
+        f"({opp['profit_pct']:.2f}%)"
     )

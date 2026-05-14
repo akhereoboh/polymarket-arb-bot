@@ -105,6 +105,14 @@ async def cmd_open(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     await update.message.reply_text("".join(lines), parse_mode=ParseMode.MARKDOWN)
 
+async def cmd_capital(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from core.capital_manager import can_open_trade, format_capital_summary
+    _, info = await can_open_trade()
+    await update.message.reply_text(
+        format_capital_summary(info),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
 
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from core.scanner import scan_once
@@ -123,3 +131,4 @@ def register_handlers(app):
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("open", cmd_open))
     app.add_handler(CommandHandler("scan", cmd_scan))
+    app.add_handler(CommandHandler("capital", cmd_capital))
