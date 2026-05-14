@@ -6,8 +6,8 @@ import aiohttp
 from dotenv import load_dotenv
 load_dotenv('/root/polymarket-arb-bot/.env')
 
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import OrderArgs
+from py_clob_client_v2.client import ClobClient
+from py_clob_client_v2.clob_types import OrderArgs
 
 
 async def get_btc_market():
