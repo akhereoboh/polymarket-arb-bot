@@ -5,6 +5,8 @@ import websockets
 from core.polymarket import get_markets_with_orderbook
 from utils.db import log_arb_trade
 from core.scanner import format_arb_alert
+from core.trading import execute_arb_trade
+
 
 ARB_THRESHOLD = float(os.getenv("ARB_THRESHOLD", "0.991"))
 SHARES = int(os.getenv("ORDER_SIZE", "5"))
@@ -114,6 +116,10 @@ async def check_arb(condition_id: str, send_alert_fn=None):
         f"UP:{up_price} + DOWN:{down_price} = {total} | "
         f"Profit: ${expected_profit}"
     )
+
+    trade_result = await execute_arb_trade(market, SHARES)
+    if trade_result.get("status") == "failed":
+        return
 
     await log_arb_trade(opportunity)
 

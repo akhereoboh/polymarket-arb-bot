@@ -4,6 +4,7 @@ import time
 from core.polymarket import get_markets_with_orderbook
 from core.capital_manager import can_open_trade, get_current_capital, get_max_trades
 from utils.db import log_arb_trade
+from core.trading import execute_arb_trade
 
 ARB_THRESHOLD = float(os.getenv("ARB_THRESHOLD", "0.991"))
 SHARES = int(os.getenv("ORDER_SIZE", "5"))
@@ -102,6 +103,13 @@ async def scan_once(send_alert_fn=None) -> list:
             f"Capital: ${capital:.4f} | "
             f"Trades: {info['open_trades']+1}/{max_t}"
         )
+
+        trade_result = await execute_arb_trade(market, SHARES)
+
+        if trade_result.get("status") == "failed":
+            print(f"[Scanner] Trade execution failed, skipping log")
+            _traded_markets.discard(condition_id)
+            continue
 
         await log_arb_trade(opportunity)
 
