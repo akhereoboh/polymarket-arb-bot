@@ -25,7 +25,12 @@ def get_trading_config():
 def build_hmac_signature(api_secret: str, timestamp: str, method: str, path: str, body: str = "") -> str:
     """Build HMAC signature for Polymarket API authentication."""
     message = timestamp + method + path + body
-    secret_bytes = base64.b64decode(api_secret)
+    # add padding if needed
+    secret = api_secret
+    padding = 4 - len(secret) % 4
+    if padding != 4:
+        secret += "=" * padding
+    secret_bytes = base64.b64decode(secret)
     signature = hmac.new(secret_bytes, message.encode(), hashlib.sha256).digest()
     return base64.b64encode(signature).decode()
 
