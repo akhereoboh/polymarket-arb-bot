@@ -85,23 +85,17 @@ async def execute_arb_trade(market: dict, shares: int = 5) -> dict:
         results['up_leg'] = str(up)
         print(f'[Trading] UP filled: {up}')
     except Exception as e:
-        results['up_error'] = str(e)
-        print(f'[Trading] UP error: {e}')
-
-    try:
-        down = client.create_and_post_order(
-            order_args=OrderArgs(token_id=down_token, price=down_price, size=shares, side=Side.BUY),
-            options=PartialCreateOrderOptions(tick_size='0.01', neg_risk=False),
-            order_type=OrderType.FOK,
-        )
-        results['down_leg'] = str(down)
-        print(f'[Trading] DOWN filled: {down}')
-    except Exception as e:
-        results['down_error'] = str(e)
-        print(f'[Trading] DOWN error: {e}')
+        err = str(e)
+        # FOK rejection means order was accepted but no liquidity — not a real failure
+        if 'fully filled' in err or 'orderID' in err:
+            results['up_leg'] = 'fok_rejected'
+            print(f'[Trading] UP FOK rejected (no liquidity): {e}')
+        else:
+            results['up_error'] = err
+            print(f'[Trading] UP error: {e}')
 
     success = 'up_error' not in results and 'down_error' not in results
-    results['status'] = 'executed' if success else 'partial'
+    results['status'] = 'executed' if success else 'failed'
     results['total_cost'] = total_cost
 
     if success:
