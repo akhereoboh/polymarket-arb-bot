@@ -10,6 +10,10 @@ CLOB_BASE = "https://clob.polymarket.com"
 ASSETS = {
     "btc": "BTC",
     "eth": "ETH",
+    "sol": "SOL",
+    "doge": "DOGE",
+    "bnb": "BNB",
+    "xrp": "XRP",
 }
 
 TIMEFRAMES = ["15m", "5m"]
