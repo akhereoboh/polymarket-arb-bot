@@ -1,121 +1,43 @@
 import os
-import time
-import hmac
-import hashlib
-import base64
+import sys
 import json
+import asyncio
 import aiohttp
-from eth_account import Account
-from eth_account.messages import encode_defunct
-from py_clob_client_v2.clob_types import PostOrdersV2Args, OrderType as OT
+from dotenv import load_dotenv
+load_dotenv('/root/polymarket-arb-bot/.env')
 
-CLOB_BASE = "https://clob.polymarket.com"
+sys.path.insert(0, '/root/my-clob-client')
 
-def get_trading_config():
-    return {
-        "private_key": os.getenv("POLYMARKET_PRIVATE_KEY"),
-        "api_key": os.getenv("POLYMARKET_API_KEY"),
-        "api_secret": os.getenv("POLYMARKET_API_SECRET"),
-        "api_passphrase": os.getenv("POLYMARKET_API_PASSPHRASE"),
-        "funder": os.getenv("POLYMARKET_FUNDER"),
-        "signature_type": int(os.getenv("POLYMARKET_SIGNATURE_TYPE", "1")),
-        "dry_run": os.getenv("DRY_RUN", "true").lower() == "true",
-    }
+from py_clob_client_v2 import ClobClient, SignatureTypeV2, ApiCreds, OrderArgs, OrderType, PartialCreateOrderOptions, Side
+from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType, PostOrdersV2Args
 
 
-def build_hmac_signature(api_secret: str, timestamp: str, method: str, path: str, body: str = "") -> str:
-    """Build HMAC signature for Polymarket API authentication."""
-    message = timestamp + method + path + body
-    # add padding if needed
-    secret = api_secret
-    padding = 4 - len(secret) % 4
-    if padding != 4:
-        secret += "=" * padding
-    secret_bytes = base64.b64decode(secret)
-    signature = hmac.new(secret_bytes, message.encode(), hashlib.sha256).digest()
-    return base64.b64encode(signature).decode()
-
-
-def get_auth_headers(method: str, path: str, body: str = "") -> dict:
-    """Generate authenticated headers for CLOB API."""
-    config = get_trading_config()
-    timestamp = str(int(time.time() * 1000))
-    signature = build_hmac_signature(
-        config["api_secret"], timestamp, method, path, body
+def get_clob_client():
+    creds = ApiCreds(
+        api_key=os.getenv('POLYMARKET_API_KEY'),
+        api_secret=os.getenv('POLYMARKET_API_SECRET'),
+        api_passphrase=os.getenv('POLYMARKET_API_PASSPHRASE'),
     )
-    return {
-        "POLY-API-KEY": config["api_key"],
-        "POLY-SIGNATURE": signature,
-        "POLY-TIMESTAMP": timestamp,
-        "POLY-PASSPHRASE": config["api_passphrase"],
-        "Content-Type": "application/json",
-    }
+    return ClobClient(
+        host='https://clob.polymarket.com',
+        chain_id=137,
+        key=os.getenv('POLYMARKET_PRIVATE_KEY'),
+        creds=creds,
+        signature_type=SignatureTypeV2.POLY_1271,
+        funder=os.getenv('POLYMARKET_FUNDER'),
+    )
 
 
 async def get_balance() -> float:
-    """Get USDC balance from Polymarket."""
     try:
-        async with aiohttp.ClientSession() as session:
-            headers = get_auth_headers("GET", "/balance")
-            async with session.get(
-                f"{CLOB_BASE}/balance",
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as resp:
-                if resp.status != 200:
-                    text = await resp.text()
-                    print(f"[Trading] Balance error {resp.status}: {text}")
-                    return 0.0
-                data = await resp.json()
-                return float(data.get("balance", 0))
+        client = get_clob_client()
+        bal = client.get_balance_allowance(
+            BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=3)
+        )
+        return int(bal.get('balance', 0)) / 1_000_000
     except Exception as e:
-        print(f"[Trading] Balance error: {e}")
+        print(f'[Trading] Balance error: {e}')
         return 0.0
-
-
-async def place_market_order(token_id: str, side: str, amount_usdc: float) -> dict:
-    """
-    Place a market order on Polymarket CLOB.
-    side: "BUY" or "SELL"
-    amount_usdc: amount in USDC to spend
-    """
-    config = get_trading_config()
-
-    if config["dry_run"]:
-        print(f"[Trading] DRY RUN — would place {side} order: token={token_id[:20]}... amount=${amount_usdc}")
-        return {"status": "dry_run", "token_id": token_id, "side": side, "amount": amount_usdc}
-
-    try:
-        order_payload = {
-            "token_id": token_id,
-            "price": 0,  # market order
-            "side": side,
-            "size_type": "USDC",
-            "size": str(amount_usdc),
-            "type": "MARKET",
-            "time_in_force": "FOK",  # fill or kill — all or nothing
-        }
-
-        body = json.dumps(order_payload)
-        headers = get_auth_headers("POST", "/order", body)
-
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{CLOB_BASE}/order",
-                headers=headers,
-                data=body,
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as resp:
-                data = await resp.json()
-                if resp.status == 200:
-                    print(f"[Trading] Order placed: {side} ${amount_usdc} token={token_id[:20]}...")
-                else:
-                    print(f"[Trading] Order error {resp.status}: {data}")
-                return data
-
-    except Exception as e:
-        print(f"[Trading] Order exception: {e}")
-        return {"error": str(e)}
 
 
 async def execute_arb_trade(market: dict, shares: int = 5) -> dict:
@@ -160,20 +82,22 @@ async def execute_arb_trade(market: dict, shares: int = 5) -> dict:
             options=PartialCreateOrderOptions(tick_size='0.01', neg_risk=False),
         )
 
-        # submit both atomically
-        
+        # submit both atomically in one batch call
         batch = [
-            PostOrdersV2Args(order=up_order, orderType=OT.FOK),
-            PostOrdersV2Args(order=down_order, orderType=OT.FOK),
+            PostOrdersV2Args(order=up_order, orderType=OrderType.FOK),
+            PostOrdersV2Args(order=down_order, orderType=OrderType.FOK),
         ]
         result = client.post_orders(batch)
         print(f'[Trading] Batch result: {result}')
 
+        # check if both filled
         success = True
-        for r in (result if isinstance(result, list) else [result]):
-            if isinstance(r, dict) and not r.get('success') and 'fully filled' not in str(r):
-                success = False
-
+        if isinstance(result, list):
+            for r in result:
+                if isinstance(r, dict):
+                    if not r.get('success') and 'fully filled' not in str(r):
+                        success = False
+        
         return {
             'status': 'executed' if success else 'failed',
             'result': str(result),
@@ -183,7 +107,7 @@ async def execute_arb_trade(market: dict, shares: int = 5) -> dict:
     except Exception as e:
         err = str(e)
         if 'fully filled' in err:
-            print(f'[Trading] FOK rejected — no liquidity: {e}')
+            print(f'[Trading] FOK rejected — no liquidity')
             return {'status': 'failed', 'error': 'no_liquidity', 'total_cost': total_cost}
         print(f'[Trading] Trade error: {e}')
         return {'status': 'failed', 'error': err, 'total_cost': total_cost}
