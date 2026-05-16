@@ -45,6 +45,7 @@ async def log_arb_trade(opp: dict) -> bool:
             "expected_payout": opp["expected_payout"],
             "expected_profit": opp["expected_profit"],
             "status": "OPEN",
+            "trade_type": "LIVE",
             "market_end_time": opp["market_end_time"],
         }
         async with aiohttp.ClientSession() as session:
