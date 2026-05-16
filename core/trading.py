@@ -7,6 +7,7 @@ import json
 import aiohttp
 from eth_account import Account
 from eth_account.messages import encode_defunct
+from py_clob_client_v2.clob_types import PostOrdersV2Args, OrderType as OT
 
 CLOB_BASE = "https://clob.polymarket.com"
 
@@ -118,69 +119,71 @@ async def place_market_order(token_id: str, side: str, amount_usdc: float) -> di
 
 
 async def execute_arb_trade(market: dict, shares: int = 5) -> dict:
-    """
-    Execute a pure arb trade — buy both UP and DOWN sides.
-    Uses FOK (fill or kill) — if either leg fails, we don't execute.
-    Returns result dict with both leg outcomes.
-    """
-    config = get_trading_config()
-    token_ids = market.get("token_ids", [])
-
+    token_ids = market.get('token_ids', [])
     if len(token_ids) < 2:
-        return {"error": "Missing token IDs"}
+        return {'error': 'Missing token IDs'}
 
     up_token = token_ids[0]
     down_token = token_ids[1]
-    up_price = market.get("up_ask", 0.5)
-    down_price = market.get("down_ask", 0.5)
-    up_cost = round(up_price * shares, 4)
-    down_cost = round(down_price * shares, 4)
+    up_price = market.get('up_ask', 0.5)
+    down_price = market.get('down_ask', 0.5)
+    total_cost = round((up_price + down_price) * shares, 4)
 
-    if config["dry_run"]:
+    dry_run = os.getenv('DRY_RUN', 'true').lower() == 'true'
+
+    if dry_run:
         print(
-            f"[Trading] DRY RUN — Arb trade:\n"
-            f"  BUY {shares} UP shares @ ${up_price} = ${up_cost}\n"
-            f"  BUY {shares} DOWN shares @ ${down_price} = ${down_cost}\n"
-            f"  Total: ${up_cost + down_cost:.4f}"
+            f'[Trading] DRY RUN — Arb trade:\n'
+            f'  BUY {shares} UP @ ${up_price}\n'
+            f'  BUY {shares} DOWN @ ${down_price}\n'
+            f'  Total: ${total_cost}'
         )
+        return {'status': 'dry_run', 'total_cost': total_cost}
+
+    balance = await get_balance()
+    if balance < total_cost:
+        print(f'[Trading] Insufficient balance: ${balance:.4f} < ${total_cost:.4f}')
+        return {'error': 'insufficient_balance', 'balance': balance, 'needed': total_cost}
+
+    print(f'[Trading] Executing arb — Balance: ${balance:.4f} | Cost: ${total_cost:.4f}')
+
+    client = get_clob_client()
+
+    try:
+        # build both orders
+        up_order = client.create_order(
+            order_args=OrderArgs(token_id=up_token, price=up_price, size=shares, side=Side.BUY),
+            options=PartialCreateOrderOptions(tick_size='0.01', neg_risk=False),
+        )
+        down_order = client.create_order(
+            order_args=OrderArgs(token_id=down_token, price=down_price, size=shares, side=Side.BUY),
+            options=PartialCreateOrderOptions(tick_size='0.01', neg_risk=False),
+        )
+
+        # submit both atomically
+        
+        batch = [
+            PostOrdersV2Args(order=up_order, orderType=OT.FOK),
+            PostOrdersV2Args(order=down_order, orderType=OT.FOK),
+        ]
+        result = client.post_orders(batch)
+        print(f'[Trading] Batch result: {result}')
+
+        success = True
+        for r in (result if isinstance(result, list) else [result]):
+            if isinstance(r, dict) and not r.get('success') and 'fully filled' not in str(r):
+                success = False
+
         return {
-            "status": "dry_run",
-            "up_leg": {"status": "simulated", "cost": up_cost},
-            "down_leg": {"status": "simulated", "cost": down_cost},
-            "total_cost": up_cost + down_cost,
+            'status': 'executed' if success else 'failed',
+            'result': str(result),
+            'total_cost': total_cost,
         }
 
-    # check balance first
-    balance = await get_balance()
-    total_cost = up_cost + down_cost
-
-    if balance < total_cost:
-        print(f"[Trading] Insufficient balance: ${balance:.4f} < ${total_cost:.4f}")
-        return {"error": "insufficient_balance", "balance": balance, "needed": total_cost}
-
-    print(f"[Trading] Executing arb — Balance: ${balance:.4f} | Cost: ${total_cost:.4f}")
-
-    # place both legs
-    up_result = await place_market_order(up_token, "BUY", up_cost)
-    down_result = await place_market_order(down_token, "BUY", down_cost)
-
-    success = (
-        up_result.get("status") not in ["error", None] and
-        down_result.get("status") not in ["error", None] and
-        "error" not in up_result and
-        "error" not in down_result
-    )
-
-    result = {
-        "status": "executed" if success else "failed",
-        "up_leg": up_result,
-        "down_leg": down_result,
-        "total_cost": total_cost,
-    }
-
-    if success:
-        print(f"[Trading] ✅ Both legs filled — Total: ${total_cost:.4f}")
-    else:
-        print(f"[Trading] ❌ One or both legs failed — Up: {up_result} | Down: {down_result}")
-
-    return result
+    except Exception as e:
+        err = str(e)
+        if 'fully filled' in err:
+            print(f'[Trading] FOK rejected — no liquidity: {e}')
+            return {'status': 'failed', 'error': 'no_liquidity', 'total_cost': total_cost}
+        print(f'[Trading] Trade error: {e}')
+        return {'status': 'failed', 'error': err, 'total_cost': total_cost}
