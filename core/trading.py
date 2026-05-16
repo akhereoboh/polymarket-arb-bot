@@ -40,6 +40,50 @@ async def get_balance() -> float:
         return 0.0
 
 
+def check_depth(client, token_id: str, price: float, shares: int) -> bool:
+    """
+    OPTION 3 — Check order book depth.
+    For a BUY at price X, check asks side has >= shares available at price <= X.
+    """
+    try:
+        book = client.get_order_book(token_id)
+        asks = book.get('asks', [])
+        available = sum(
+            float(a['size']) for a in asks
+            if float(a['price']) <= price
+        )
+        has_depth = available >= shares
+        print(f'[Depth] token={token_id[:10]}... price={price} need={shares} available={available:.2f} ok={has_depth}')
+        return has_depth
+    except Exception as e:
+        print(f'[Depth] Error checking depth: {e}')
+        return False
+
+
+async def cancel_leg(client, order_id: str, token_id: str, shares: int, side: str):
+    """
+    OPTION 2 — Cancel/close a filled leg by selling it back.
+    """
+    try:
+        print(f'[Trading] Closing exposed {side} leg — selling {shares} shares back')
+        close_side = Side.SELL if side == 'UP' else Side.SELL
+        result = client.create_and_post_order(
+            order_args=OrderArgs(
+                token_id=token_id,
+                price=0.5,  # market price
+                size=shares,
+                side=close_side
+            ),
+            options=PartialCreateOrderOptions(tick_size='0.01', neg_risk=False),
+            order_type=OrderType.FOK,
+        )
+        print(f'[Trading] Close result: {result}')
+        return result
+    except Exception as e:
+        print(f'[Trading] Failed to close leg: {e}')
+        return None
+
+
 async def execute_arb_trade(market: dict, shares: int = 5) -> dict:
     token_ids = market.get('token_ids', [])
     if len(token_ids) < 2:
@@ -67,9 +111,17 @@ async def execute_arb_trade(market: dict, shares: int = 5) -> dict:
         print(f'[Trading] Insufficient balance: ${balance:.4f} < ${total_cost:.4f}')
         return {'error': 'insufficient_balance', 'balance': balance, 'needed': total_cost}
 
-    print(f'[Trading] Executing arb — Balance: ${balance:.4f} | Cost: ${total_cost:.4f}')
-
     client = get_clob_client()
+
+    # OPTION 3 — check depth on both sides before placing
+    up_ok = check_depth(client, up_token, up_price, shares)
+    down_ok = check_depth(client, down_token, down_price, shares)
+
+    if not up_ok or not down_ok:
+        print(f'[Trading] Insufficient depth — UP:{up_ok} DOWN:{down_ok} — skipping')
+        return {'status': 'skipped', 'reason': 'no_depth', 'total_cost': total_cost}
+
+    print(f'[Trading] Depth OK — executing arb. Balance: ${balance:.4f} | Cost: ${total_cost:.4f}')
 
     try:
         # build both orders
@@ -82,7 +134,7 @@ async def execute_arb_trade(market: dict, shares: int = 5) -> dict:
             options=PartialCreateOrderOptions(tick_size='0.01', neg_risk=False),
         )
 
-        # submit both atomically in one batch call
+        # OPTION 1 — submit both atomically
         batch = [
             PostOrdersV2Args(order=up_order, orderType=OrderType.FOK),
             PostOrdersV2Args(order=down_order, orderType=OrderType.FOK),
@@ -90,24 +142,34 @@ async def execute_arb_trade(market: dict, shares: int = 5) -> dict:
         result = client.post_orders(batch)
         print(f'[Trading] Batch result: {result}')
 
-        # check if both filled
-        success = True
-        if isinstance(result, list):
-            for r in result:
-                if isinstance(r, dict):
-                    if not r.get('success') and 'fully filled' not in str(r):
-                        success = False
-        
-        return {
-            'status': 'executed' if success else 'failed',
-            'result': str(result),
-            'total_cost': total_cost,
-        }
+        # parse results
+        results_list = result if isinstance(result, list) else [result]
+        up_result = results_list[0] if len(results_list) > 0 else {}
+        down_result = results_list[1] if len(results_list) > 1 else {}
+
+        up_filled = isinstance(up_result, dict) and up_result.get('success')
+        down_filled = isinstance(down_result, dict) and down_result.get('success')
+
+        if up_filled and down_filled:
+            print(f'[Trading] ✅ Both legs filled — Total: ${total_cost:.4f}')
+            return {'status': 'executed', 'result': str(result), 'total_cost': total_cost}
+
+        # OPTION 2 — one leg filled, close it
+        if up_filled and not down_filled:
+            print(f'[Trading] ⚠️ UP filled but DOWN failed — closing UP leg')
+            await cancel_leg(client, None, up_token, shares, 'UP')
+            return {'status': 'failed', 'error': 'partial_closed_up', 'total_cost': total_cost}
+
+        if down_filled and not up_filled:
+            print(f'[Trading] ⚠️ DOWN filled but UP failed — closing DOWN leg')
+            await cancel_leg(client, None, down_token, shares, 'DOWN')
+            return {'status': 'failed', 'error': 'partial_closed_down', 'total_cost': total_cost}
+
+        # neither filled
+        print(f'[Trading] Both legs rejected — no exposure')
+        return {'status': 'failed', 'error': 'no_liquidity', 'total_cost': total_cost}
 
     except Exception as e:
         err = str(e)
-        if 'fully filled' in err:
-            print(f'[Trading] FOK rejected — no liquidity')
-            return {'status': 'failed', 'error': 'no_liquidity', 'total_cost': total_cost}
         print(f'[Trading] Trade error: {e}')
         return {'status': 'failed', 'error': err, 'total_cost': total_cost}
