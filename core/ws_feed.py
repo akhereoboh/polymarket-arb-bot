@@ -14,7 +14,7 @@ SHARES = int(os.getenv("ORDER_SIZE", "5"))
 WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
 # in-memory price book — token_id -> best price
-_price_book: dict[str, float] = {}
+_price_book: dict[str, dict] = {}
 
 # market metadata — condition_id -> market info
 _market_map: dict[str, dict] = {}
@@ -49,21 +49,27 @@ async def build_market_map():
 
 
 def get_current_prices(condition_id: str) -> tuple:
-    """
-    Get current up/down prices for a market from the price book.
-    Returns (up_price, down_price) or (None, None).
-    """
     market = _market_map.get(condition_id)
     if not market:
         return None, None
-
     token_ids = market.get("token_ids", [])
     if len(token_ids) < 2:
         return None, None
 
-    up_price = _price_book.get(token_ids[0])
-    down_price = _price_book.get(token_ids[1])
+    def extract_price(entry):
+        if isinstance(entry, dict):
+            return entry.get("price")
+        return entry  # already a float
+
+    up_price = extract_price(_price_book.get(token_ids[0]))
+    down_price = extract_price(_price_book.get(token_ids[1]))
     return up_price, down_price
+
+def get_asks_from_book(token_id: str) -> list:
+    entry = _price_book.get(token_id, {})
+    if isinstance(entry, dict):
+        return entry.get("asks", [])
+    return []
 
 
 async def check_arb(condition_id: str, send_alert_fn=None):
@@ -130,6 +136,9 @@ async def check_arb(condition_id: str, send_alert_fn=None):
             print(f"[WS] Telegram error: {e}")
 
 
+
+
+
 def process_book_update(data: dict, send_alert_fn=None) -> list:
     """
     Process a book snapshot or price_change event from WebSocket.
@@ -153,17 +162,24 @@ def process_book_update(data: dict, send_alert_fn=None) -> list:
             # full book snapshot
             asks = event.get("asks", [])
             if asks:
-                best_ask = float(asks[0]["price"])
-                _price_book[asset_id] = best_ask
+                _price_book[asset_id] = {
+                    "price": float(asks[0]["price"]),
+                    "asks": asks  # keep full list
+                }
 
         elif event_type == "price_change":
-            # price update
             changes = event.get("changes", [])
             for change in changes:
                 side = change.get("side", "")
                 price = change.get("price")
                 if side == "ASK" and price:
-                    _price_book[asset_id] = float(price)
+                    # preserve existing asks list, just update price
+                    existing = _price_book.get(asset_id, {})
+                    existing_asks = existing.get("asks", []) if isinstance(existing, dict) else []
+                    _price_book[asset_id] = {
+                        "price": float(price),
+                        "asks": existing_asks
+                    }
                     break
 
         tasks.append(condition_id)

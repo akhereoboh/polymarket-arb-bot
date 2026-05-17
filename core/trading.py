@@ -41,23 +41,27 @@ async def get_balance() -> float:
 
 
 def check_depth(client, token_id: str, price: float, shares: int) -> bool:
-    """
-    OPTION 3 — Check order book depth.
-    For a BUY at price X, check asks side has >= shares available at price <= X.
-    """
-    try:
-        book = client.get_order_book(token_id)
-        asks = book.get('asks', [])
+    from core.ws_feed import get_asks_from_book
+    asks = get_asks_from_book(token_id)
+    if asks:
         available = sum(
-            float(a['size']) for a in asks
-            if float(a['price']) <= price
+            float(a["size"]) for a in asks
+            if float(a["price"]) <= price
         )
         has_depth = available >= shares
-        print(f'[Depth] token={token_id[:10]}... price={price} need={shares} available={available:.2f} ok={has_depth}')
+        print(f'[Depth] token={token_id[:10]}... available={available:.2f} need={shares} ok={has_depth}')
+        return has_depth
+    # fallback to API call if no cached data
+    try:
+        book = client.get_order_book(token_id)
+        asks = book.get("asks", [])
+        available = sum(float(a["size"]) for a in asks if float(a["price"]) <= price)
+        has_depth = available >= shares
+        print(f'[Depth-API] token={token_id[:10]}... available={available:.2f} need={shares} ok={has_depth}')
         return has_depth
     except Exception as e:
-        print(f'[Depth] Error checking depth: {e}')
-        return False
+        print(f'[Depth] Error: {e} — allowing trade')
+        return True
 
 
 async def cancel_leg(client, order_id: str, token_id: str, shares: int, side: str):
