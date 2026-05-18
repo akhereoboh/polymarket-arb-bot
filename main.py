@@ -10,6 +10,7 @@ from tgram.bot import send_message, get_application, register_handlers
 from core.scanner import scan_once
 from utils.db import settle_expired_trades
 from core.ws_feed import ws_listener, refresh_market_map_loop
+from core.ws_feed import ws_listener, refresh_market_map_loop, user_ws_listener
 
 SCAN_INTERVAL = 30      # polling fallback every 30 seconds
 SETTLE_INTERVAL = 60    # check settlements every 60 seconds
@@ -59,6 +60,7 @@ async def main():
 
     await asyncio.gather(
         ws_listener(send_alert_fn=send_message),
+        user_ws_listener(),
         refresh_market_map_loop(),
         scanner_loop(),
         settlement_loop(),

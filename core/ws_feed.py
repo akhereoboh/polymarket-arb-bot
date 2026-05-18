@@ -261,3 +261,86 @@ async def refresh_market_map_loop():
         await asyncio.sleep(600)
         print("[WS] Refreshing market map...")
         await build_market_map()
+
+# shared dict to track pending order IDs and their fill status
+_pending_orders: dict[str, dict] = {}  # order_id -> {side, token_id, filled}
+
+def register_pending_orders(up_order_id: str, down_order_id: str, condition_id: str):
+    """Register GTC orders to watch for fills via user WebSocket."""
+    _pending_orders[up_order_id] = {'side': 'up', 'condition_id': condition_id, 'filled': False}
+    _pending_orders[down_order_id] = {'side': 'down', 'condition_id': condition_id, 'filled': False}
+
+def get_fill_status(up_order_id: str, down_order_id: str) -> tuple:
+    """Check if both orders are filled."""
+    up = _pending_orders.get(up_order_id, {}).get('filled', False)
+    down = _pending_orders.get(down_order_id, {}).get('filled', False)
+    return up, down
+
+def clear_pending_orders(up_order_id: str, down_order_id: str):
+    """Remove orders from tracking."""
+    _pending_orders.pop(up_order_id, None)
+    _pending_orders.pop(down_order_id, None)
+
+async def user_ws_listener():
+    """
+    User WebSocket listener for real-time fill notifications.
+    Runs alongside the market WebSocket.
+    """
+    import websocket as ws_client
+    import threading
+
+    uri = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
+
+    sub_msg = {
+        "auth": {
+            "apiKey": os.getenv("POLYMARKET_API_KEY"),
+            "secret": os.getenv("POLYMARKET_API_SECRET"),
+            "passphrase": os.getenv("POLYMARKET_API_PASSPHRASE"),
+        },
+        "type": "user",
+        "markets": [],
+        "assets_ids": [],
+        "initial_dump": True,
+    }
+
+    def on_open(ws):
+        print("[UserWS] Connected")
+        ws.send(json.dumps(sub_msg))
+
+    def on_message(ws, message):
+        try:
+            data = json.loads(message)
+            events = data if isinstance(data, list) else [data]
+            for event in events:
+                order_id = event.get('id') or event.get('order_id') or event.get('orderID')
+                event_type = event.get('type', '')
+                if order_id and order_id in _pending_orders:
+                    if event_type in ('trade', 'order_filled', 'TRADE', 'FILLED'):
+                        _pending_orders[order_id]['filled'] = True
+                        side = _pending_orders[order_id]['side']
+                        print(f"[UserWS] ✅ {side.upper()} order filled: {order_id[:20]}...")
+        except Exception as e:
+            print(f"[UserWS] Message error: {e}")
+
+    def on_error(ws, error):
+        print(f"[UserWS] Error: {error}")
+
+    def on_close(ws, code, reason):
+        print(f"[UserWS] Closed: {code} {reason} — will reconnect")
+
+    while True:
+        try:
+            print("[UserWS] Connecting...")
+            ws = ws_client.WebSocketApp(
+                uri,
+                on_open=on_open,
+                on_message=on_message,
+                on_error=on_error,
+                on_close=on_close,
+            )
+            # run in executor to avoid blocking asyncio
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, ws.run_forever)
+        except Exception as e:
+            print(f"[UserWS] Exception: {e}")
+        await asyncio.sleep(5)
