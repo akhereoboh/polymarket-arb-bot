@@ -5,6 +5,7 @@ import asyncio
 import aiohttp
 from dotenv import load_dotenv
 load_dotenv('/root/polymarket-arb-bot/.env')
+import time
 
 sys.path.insert(0, '/root/my-clob-client')
 
@@ -118,8 +119,8 @@ async def execute_arb_trade(market: dict, shares: int = 5) -> dict:
     client = get_clob_client()
 
     # OPTION 3 — check depth on both sides before placing
-    up_ok = check_depth(client, up_token, up_price, shares)
-    down_ok = check_depth(client, down_token, down_price, shares)
+    up_ok = check_depth(client, up_token, up_price, shares * 2)
+    down_ok = check_depth(client, down_token, down_price, shares * 2)
 
     if not up_ok or not down_ok:
         print(f'[Trading] Insufficient depth — UP:{up_ok} DOWN:{down_ok} — skipping')
@@ -128,20 +129,33 @@ async def execute_arb_trade(market: dict, shares: int = 5) -> dict:
     print(f'[Trading] Depth OK — executing arb. Balance: ${balance:.4f} | Cost: ${total_cost:.4f}')
 
     try:
-        # build both orders
-        up_order = client.create_order(
-            order_args=OrderArgs(token_id=up_token, price=up_price, size=shares, side=Side.BUY),
+        # OPTION 1 — submit both atomically
+        expiry = int(time.time()) + 30  # 30 seconds from now
+
+        up_order_gtc = client.create_order(
+            order_args=OrderArgs(
+                token_id=up_token,
+                price=up_price,
+                size=shares,
+                side=Side.BUY,
+                expiration=expiry
+            ),
             options=PartialCreateOrderOptions(tick_size='0.01', neg_risk=False),
         )
-        down_order = client.create_order(
-            order_args=OrderArgs(token_id=down_token, price=down_price, size=shares, side=Side.BUY),
+        down_order_gtc = client.create_order(
+            order_args=OrderArgs(
+                token_id=down_token,
+                price=down_price,
+                size=shares,
+                side=Side.BUY,
+                expiration=expiry
+            ),
             options=PartialCreateOrderOptions(tick_size='0.01', neg_risk=False),
         )
 
-        # OPTION 1 — submit both atomically
         batch = [
-            PostOrdersV2Args(order=up_order, orderType=OrderType.FOK),
-            PostOrdersV2Args(order=down_order, orderType=OrderType.FOK),
+            PostOrdersV2Args(order=up_order_gtc, orderType=OrderType.GTC),
+            PostOrdersV2Args(order=down_order_gtc, orderType=OrderType.GTC),
         ]
         result = client.post_orders(batch)
         print(f'[Trading] Batch result: {result}')
