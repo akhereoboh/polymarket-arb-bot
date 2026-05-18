@@ -249,3 +249,7 @@ async def execute_arb_trade(market: dict, shares: int = 5) -> dict:
             except Exception as ce:
                 print(f'[Trading] Cancel error: {ce}')
             return {'status': 'failed', 'error': 'up_rejected', 'total_cost': total_cost}
+    except Exception as e:
+        err = str(e)
+        print(f'[Trading] Trade error: {e}')
+        return {'status': 'failed', 'error': err, 'total_cost': total_cost}
