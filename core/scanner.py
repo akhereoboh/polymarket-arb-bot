@@ -106,8 +106,8 @@ async def scan_once(send_alert_fn=None) -> list:
 
         trade_result = await execute_arb_trade(market, SHARES)
 
-        if trade_result.get("status") == "failed":
-            print(f"[Scanner] Trade execution failed, skipping log")
+        if trade_result.get("status") != "executed":
+            print(f"[Scanner] Trade not executed — status: {trade_result.get('status')} — skipping log")
             _traded_markets.discard(condition_id)
             continue
 

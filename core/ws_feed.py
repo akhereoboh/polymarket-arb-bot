@@ -124,9 +124,9 @@ async def check_arb(condition_id: str, send_alert_fn=None):
     )
 
     trade_result = await execute_arb_trade(market, SHARES)
-    if trade_result.get("status") == "failed":
+    if trade_result.get("status") != "executed":
+        print(f'[WS] Trade not executed — status: {trade_result.get("status")} — skipping log')
         return
-
     await log_arb_trade(opportunity)
 
     if send_alert_fn:
