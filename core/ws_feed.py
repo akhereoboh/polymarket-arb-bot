@@ -31,11 +31,19 @@ async def build_market_map():
     Fetch all active markets and build lookup maps.
     Called once on startup and periodically to catch new markets.
     """
+    global _market_map, _token_to_market
+
     markets = await get_markets_with_orderbook()
+
+    # clear old maps before rebuilding to prevent accumulation
+    _market_map.clear()
+    _token_to_market.clear()
+
     for m in markets:
         condition_id = m["condition_id"]
         token_ids = m.get("token_ids", [])
         _market_map[condition_id] = m
+        m['condition_id'] = condition_id  # ensure condition_id is in market dict
         for tid in token_ids:
             _token_to_market[tid] = condition_id
             # seed price book with embedded prices
