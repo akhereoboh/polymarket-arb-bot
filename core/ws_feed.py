@@ -93,7 +93,7 @@ async def check_arb(condition_id: str, send_alert_fn=None):
     # arb found
     _traded.add(condition_id)
     market = _market_map[condition_id]
-
+    market['condition_id'] = condition_id
     total_invested = round(total * SHARES, 4)
     expected_payout = float(SHARES)
     expected_profit = round(expected_payout - total_invested, 4)

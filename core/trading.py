@@ -160,39 +160,92 @@ async def execute_arb_trade(market: dict, shares: int = 5) -> dict:
         result = client.post_orders(batch)
         print(f'[Trading] Batch result: {result}')
 
-        # parse results
+        # extract order IDs
         results_list = result if isinstance(result, list) else [result]
         up_result = results_list[0] if len(results_list) > 0 else {}
         down_result = results_list[1] if len(results_list) > 1 else {}
 
-        # GTC orders are accepted when they have an orderID (sits in book waiting to fill)
-        up_filled = isinstance(up_result, dict) and (
-            up_result.get('success') or up_result.get('orderID') or up_result.get('order_id')
-        )
-        down_filled = isinstance(down_result, dict) and (
-            down_result.get('success') or down_result.get('orderID') or down_result.get('order_id')
-        )
+        up_order_id = None
+        down_order_id = None
 
-        if up_filled and down_filled:
-            print(f'[Trading] ✅ Both legs filled — Total: ${total_cost:.4f}')
-            return {'status': 'executed', 'result': str(result), 'total_cost': total_cost}
+        if isinstance(up_result, dict):
+            up_order_id = up_result.get('orderID') or up_result.get('order_id')
+        if isinstance(down_result, dict):
+            down_order_id = down_result.get('orderID') or down_result.get('order_id')
 
-        # OPTION 2 — one leg filled, close it
-        if up_filled and not down_filled:
-            print(f'[Trading] ⚠️ UP filled but DOWN failed — closing UP leg')
-            await cancel_leg(client, None, up_token, shares, 'UP')
-            return {'status': 'failed', 'error': 'partial_closed_up', 'total_cost': total_cost}
+        up_accepted = up_order_id is not None
+        down_accepted = down_order_id is not None
 
-        if down_filled and not up_filled:
-            print(f'[Trading] ⚠️ DOWN filled but UP failed — closing DOWN leg')
-            await cancel_leg(client, None, down_token, shares, 'DOWN')
-            return {'status': 'failed', 'error': 'partial_closed_down', 'total_cost': total_cost}
+        if not up_accepted and not down_accepted:
+            print(f'[Trading] Both orders rejected — no exposure')
+            return {'status': 'failed', 'error': 'no_liquidity', 'total_cost': total_cost}
 
-        # neither filled
-        print(f'[Trading] Both legs rejected — no exposure')
-        return {'status': 'failed', 'error': 'no_liquidity', 'total_cost': total_cost}
+        if up_accepted and down_accepted:
+            print(f'[Trading] Both orders accepted — monitoring for 30s...')
+            # monitor gap for 30 seconds — cancel if gap closes
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                await asyncio.sleep(2)
+                # check current prices from price book
+                from core.ws_feed import get_current_prices
+                cur_up, cur_down = get_current_prices(market.get('condition_id', ''))
+                if cur_up and cur_down:
+                    cur_total = round(cur_up + cur_down, 4)
+                    if cur_total > float(os.getenv('ARB_THRESHOLD', '0.991')):
+                        print(f'[Trading] Gap closed ({cur_total}) — cancelling orders')
+                        try:
+                            client.cancel_orders([up_order_id, down_order_id])
+                            print(f'[Trading] Orders cancelled')
+                        except Exception as ce:
+                            print(f'[Trading] Cancel error: {ce}')
+                        return {'status': 'failed', 'error': 'gap_closed', 'total_cost': total_cost}
 
-    except Exception as e:
-        err = str(e)
-        print(f'[Trading] Trade error: {e}')
-        return {'status': 'failed', 'error': err, 'total_cost': total_cost}
+            # after 30s check if filled
+            open_orders = client.get_open_orders()
+            open_ids = [o.get('id') or o.get('order_id') for o in (open_orders if isinstance(open_orders, list) else [])]
+            up_filled = up_order_id not in open_ids
+            down_filled = down_order_id not in open_ids
+
+            if up_filled and down_filled:
+                print(f'[Trading] ✅ Both legs filled — Total: ${total_cost:.4f}')
+                return {'status': 'executed', 'result': str(result), 'total_cost': total_cost}
+
+            # cancel any remaining unfilled orders
+            remaining = [oid for oid in [up_order_id, down_order_id] if oid in open_ids]
+            if remaining:
+                try:
+                    client.cancel_orders(remaining)
+                    print(f'[Trading] Cancelled {len(remaining)} unfilled orders')
+                except Exception as ce:
+                    print(f'[Trading] Cancel error: {ce}')
+
+            # OPTION 2 — one leg filled, close it
+            if up_filled and not down_filled:
+                print(f'[Trading] ⚠️ UP filled but DOWN expired — closing UP leg')
+                await cancel_leg(client, None, up_token, shares, 'UP')
+                return {'status': 'failed', 'error': 'partial_closed_up', 'total_cost': total_cost}
+
+            if down_filled and not up_filled:
+                print(f'[Trading] ⚠️ DOWN filled but UP expired — closing DOWN leg')
+                await cancel_leg(client, None, down_token, shares, 'DOWN')
+                return {'status': 'failed', 'error': 'partial_closed_down', 'total_cost': total_cost}
+
+            print(f'[Trading] Neither filled within 30s — orders expired')
+            return {'status': 'failed', 'error': 'expired_unfilled', 'total_cost': total_cost}
+
+        # one order accepted, other rejected
+        if up_accepted and not down_accepted:
+            print(f'[Trading] DOWN rejected — cancelling UP order')
+            try:
+                client.cancel_orders([up_order_id])
+            except Exception as ce:
+                print(f'[Trading] Cancel error: {ce}')
+            return {'status': 'failed', 'error': 'down_rejected', 'total_cost': total_cost}
+
+        if down_accepted and not up_accepted:
+            print(f'[Trading] UP rejected — cancelling DOWN order')
+            try:
+                client.cancel_orders([down_order_id])
+            except Exception as ce:
+                print(f'[Trading] Cancel error: {ce}')
+            return {'status': 'failed', 'error': 'up_rejected', 'total_cost': total_cost}
