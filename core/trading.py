@@ -165,8 +165,13 @@ async def execute_arb_trade(market: dict, shares: int = 5) -> dict:
         up_result = results_list[0] if len(results_list) > 0 else {}
         down_result = results_list[1] if len(results_list) > 1 else {}
 
-        up_filled = isinstance(up_result, dict) and up_result.get('success')
-        down_filled = isinstance(down_result, dict) and down_result.get('success')
+        # GTC orders are accepted when they have an orderID (sits in book waiting to fill)
+        up_filled = isinstance(up_result, dict) and (
+            up_result.get('success') or up_result.get('orderID') or up_result.get('order_id')
+        )
+        down_filled = isinstance(down_result, dict) and (
+            down_result.get('success') or down_result.get('orderID') or down_result.get('order_id')
+        )
 
         if up_filled and down_filled:
             print(f'[Trading] ✅ Both legs filled — Total: ${total_cost:.4f}')
