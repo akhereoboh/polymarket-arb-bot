@@ -214,7 +214,51 @@ async def place_trade(market: dict, direction: str,
     except Exception as e:
         print(f'  [Order] Error: {e}')
         return {'status': 'error', 'error': str(e)}
-
+    
+    
+async def get_opening_chainlink_price(session, market_end_time) -> float:
+    """Get Chainlink price at market start (5 minutes before end)."""
+    market_start_ts = market_end_time.timestamp() - 300  # 5 min before end
+    
+    # get current round
+    payload = {
+        "jsonrpc": "2.0",
+        "method": "eth_call",
+        "params": [{"to": CL_CONTRACT, "data": "0xfeaf968c"}, "latest"],
+        "id": 1
+    }
+    async with session.post(RPC, json=payload,
+                           timeout=aiohttp.ClientTimeout(total=5)) as r:
+        data = await r.json()
+        result = data['result']
+        current_round = int(result[2:2+64], 16)
+        current_updated = int(result[2+192:2+256], 16)
+    
+    # estimate round at market start
+    now_ts = time.time()
+    seconds_ago = now_ts - market_start_ts
+    rounds_ago = int(seconds_ago / 33)  # ~33 seconds per round
+    target_round = current_round - rounds_ago
+    
+    # get that round's price
+    round_hex = hex(target_round)[2:].zfill(64)
+    payload2 = {
+        "jsonrpc": "2.0",
+        "method": "eth_call",
+        "params": [{"to": CL_CONTRACT, "data": "0x9a6fc8f5" + round_hex}],
+        "id": 1
+    }
+    async with session.post(RPC, json=payload2,
+                           timeout=aiohttp.ClientTimeout(total=5)) as r:
+        data = await r.json()
+        if 'result' in data and data['result'] and data['result'] != '0x':
+            res = data['result']
+            price = int(res[2+64:2+128], 16) / 1e8
+            if price > 0:
+                return price
+    
+    # fallback to current price
+    return int(result[2+64:2+128], 16) / 1e8
 
 async def price_monitor():
     """Continuously update Binance price history."""
@@ -257,7 +301,9 @@ async def market_scanner():
 
                     # store opening price when market first seen
                     if cid not in _opening_prices:
-                        _opening_prices[cid] = cl_price
+                        opening = await get_opening_chainlink_price(session, end_time)
+                        _opening_prices[cid] = opening
+                        print(f'[Market] New: {market["title"]} | {seconds_left:.0f}s left | Opening CL: ${opening:,.2f}')
                         print(
                             f'[Market] New: {market["title"]} | '
                             f'{seconds_left:.0f}s left | '
