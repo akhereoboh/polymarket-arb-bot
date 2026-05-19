@@ -113,6 +113,16 @@ async def cmd_capital(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN,
     )
 
+async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from core.trading import get_balance
+    balance = await get_balance()
+    await update.message.reply_text(
+        f"💰 *Polymarket Balance*\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"*Available cash:* ${balance:.4f} pUSD\n"
+        f"*Wallet:* `0xfc4a9AC2835...`",
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from core.scanner import scan_once
@@ -132,3 +142,4 @@ def register_handlers(app):
     app.add_handler(CommandHandler("open", cmd_open))
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CommandHandler("capital", cmd_capital))
+    app.add_handler(CommandHandler("balance", cmd_balance))
