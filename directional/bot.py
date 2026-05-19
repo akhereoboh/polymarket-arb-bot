@@ -37,15 +37,17 @@ from pathlib import Path
 
 LOG_FILE = os.path.join(os.path.dirname(__file__), 'signals_log.csv')
 
-def log_signal(market: dict, direction: str, shares: int, 
-               cl_pct: float, bn_pct: float, confidence: float):
-    """Log signal to CSV for accuracy analysis."""
+def log_signal(market: dict, direction: str, shares: int,
+               cl_pct: float, bn_pct: float, confidence: float,
+               cl_price: float, opening_price: float, binance_price: float):
     file_exists = Path(LOG_FILE).exists()
     with open(LOG_FILE, 'a', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=[
             'timestamp', 'market', 'end_time', 'direction',
             'entry_price', 'shares', 'cost', 'cl_pct', 'bn_pct',
-            'confidence', 'up_price', 'down_price', 'dry_run', 'outcome'
+            'confidence', 'up_price', 'down_price',
+            'cl_price_at_signal', 'opening_cl_price', 'binance_at_signal',
+            'dry_run', 'outcome', 'resolution_cl_price'
         ])
         if not file_exists:
             writer.writeheader()
@@ -64,8 +66,12 @@ def log_signal(market: dict, direction: str, shares: int,
             'confidence': round(confidence, 4),
             'up_price': market['up_price'],
             'down_price': market['down_price'],
+            'cl_price_at_signal': round(cl_price, 2),
+            'opening_cl_price': round(opening_price, 2),
+            'binance_at_signal': round(binance_price, 2),
             'dry_run': DRY_RUN,
-            'outcome': 'PENDING'
+            'outcome': 'PENDING',
+            'resolution_cl_price': ''
         })
     print(f'[Log] Signal logged to {LOG_FILE}')
 
@@ -316,6 +322,9 @@ async def price_monitor():
             await asyncio.sleep(5)
 
 
+
+
+
 async def market_scanner():
     """Main scanning loop."""
     async with aiohttp.ClientSession() as session:
@@ -410,7 +419,8 @@ async def market_scanner():
 
                     # place trade
                     _traded.add(cid)
-                    log_signal(market, direction, shares, cl_pct, bn_pct, confidence)
+                    log_signal(market, direction, shares, cl_pct, bn_pct, confidence,
+                               cl_price, _opening_prices[cid], _btc_history[-1][1])
                     await place_trade(market, direction, shares, confidence)
 
             except Exception as e:
