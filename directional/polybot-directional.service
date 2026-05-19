@@ -1,0 +1,17 @@
+[Unit]
+Description=Polymarket Directional Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/polymarket-arb-bot
+ExecStart=/root/polymarket-arb-bot/trading_venv/bin/python /root/polymarket-arb-bot/directional/bot.py
+Restart=always
+RestartSec=10
+Environment=PYTHONPATH=/root/my-clob-client
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
