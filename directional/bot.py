@@ -6,6 +6,9 @@ import sys
 import time
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
+import csv
+from pathlib import Path
+
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 sys.path.insert(0, '/root/my-clob-client')
@@ -29,6 +32,42 @@ _traded       = set()          # condition_ids already traded this session
 _btc_history  = []             # [(timestamp, binance_price), ...]
 _opening_prices = {}           # condition_id -> chainlink opening price
 
+import csv
+from pathlib import Path
+
+LOG_FILE = os.path.join(os.path.dirname(__file__), 'signals_log.csv')
+
+def log_signal(market: dict, direction: str, shares: int, 
+               cl_pct: float, bn_pct: float, confidence: float):
+    """Log signal to CSV for accuracy analysis."""
+    file_exists = Path(LOG_FILE).exists()
+    with open(LOG_FILE, 'a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            'timestamp', 'market', 'end_time', 'direction',
+            'entry_price', 'shares', 'cost', 'cl_pct', 'bn_pct',
+            'confidence', 'up_price', 'down_price', 'dry_run', 'outcome'
+        ])
+        if not file_exists:
+            writer.writeheader()
+        
+        price = market['up_price'] if direction == 'up' else market['down_price']
+        writer.writerow({
+            'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+            'market': market['title'],
+            'end_time': market['end_time'].strftime('%Y-%m-%d %H:%M:%S'),
+            'direction': direction.upper(),
+            'entry_price': price,
+            'shares': shares,
+            'cost': round(shares * price, 4),
+            'cl_pct': round(cl_pct, 4),
+            'bn_pct': round(bn_pct, 4),
+            'confidence': round(confidence, 4),
+            'up_price': market['up_price'],
+            'down_price': market['down_price'],
+            'dry_run': DRY_RUN,
+            'outcome': 'PENDING'
+        })
+    print(f'[Log] Signal logged to {LOG_FILE}')
 
 def get_client():
     creds = ApiCreds(
@@ -195,7 +234,7 @@ async def place_trade(market: dict, direction: str,
 
     if DRY_RUN:
         print(f'  [DRY RUN] Would place {side_str} order')
-        return {'status': 'dry_run'}
+        return {'status': 'dry_run', 'logged':True}
 
     try:
         client = get_client()
@@ -371,6 +410,7 @@ async def market_scanner():
 
                     # place trade
                     _traded.add(cid)
+                    log_signal(market, direction, shares, cl_pct, bn_pct, confidence)
                     await place_trade(market, direction, shares, confidence)
 
             except Exception as e:
