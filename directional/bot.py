@@ -96,7 +96,10 @@ async def get_active_btc_markets(session) -> list:
         end_time = datetime.fromisoformat(end_str.replace('Z', '+00:00'))
         seconds_left = (end_time - now).total_seconds()
 
-        if seconds_left < 0 or seconds_left > 360:
+        if seconds_left < 0:
+            continue
+        if seconds_left > 360:
+            print(f'[Waiting] {e["title"]} | {seconds_left:.0f}s left')
             continue
 
         m = e['markets'][0]
