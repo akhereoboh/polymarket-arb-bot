@@ -6,7 +6,8 @@ from core.polymarket import get_markets_with_orderbook
 from utils.db import log_arb_trade
 from core.scanner import format_arb_alert
 from core.trading import execute_arb_trade
-
+import websocket as ws_client
+import threading
 
 ARB_THRESHOLD = float(os.getenv("ARB_THRESHOLD", "0.991"))
 SHARES = int(os.getenv("ORDER_SIZE", "5"))
@@ -286,8 +287,7 @@ async def user_ws_listener():
     User WebSocket listener for real-time fill notifications.
     Runs alongside the market WebSocket.
     """
-    import websocket as ws_client
-    import threading
+    
 
     uri = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
 
