@@ -301,6 +301,7 @@ async def user_ws_listener():
         "markets": [],
         "assets_ids": [],
         "initial_dump": True,
+        "subscriptions": ["balance", "trade"]
     }
 
     def on_open(ws):
