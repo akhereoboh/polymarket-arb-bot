@@ -1,0 +1,4 @@
+aiohttp
+python-dotenv
+websockets
+eth-account
