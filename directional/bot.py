@@ -4,7 +4,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
@@ -72,10 +72,18 @@ async def get_binance_price(session) -> float:
 
 
 async def get_active_btc_markets(session) -> list:
+   
+    now_str = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     async with session.get(
         'https://gamma-api.polymarket.com/events',
-        params={'active': 'true', 'closed': 'false', 'limit': '50',
-                'order': 'endDate', 'ascending': 'true'},
+        params={
+            'active': 'true',
+            'closed': 'false',
+            'limit': '50',
+            'order': 'endDate',
+            'ascending': 'true',
+            'end_date_min': now_str,  # only markets ending in the future
+        },
         headers={'User-Agent': 'Mozilla/5.0'}
     ) as r:
         events = await r.json()
