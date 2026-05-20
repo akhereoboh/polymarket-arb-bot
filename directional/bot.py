@@ -174,6 +174,11 @@ async def get_active_btc_markets(session) -> list:
         if len(token_ids) < 2 or len(prices) < 2:
             continue
 
+        volume = float(m.get('volume', 0))
+        if volume < 500:
+            print(f'[Skip] Low volume ${volume:.0f} — {e["title"]}')
+            continue
+
         markets.append({
             'title':        e['title'],
             'condition_id': m.get('conditionId', ''),
@@ -184,7 +189,9 @@ async def get_active_btc_markets(session) -> list:
             'down_token':   token_ids[1],
             'up_price':     float(prices[0]),
             'down_price':   float(prices[1]),
+            'volume':       volume,
         })
+        
 
     return markets
 
@@ -389,7 +396,7 @@ async def market_scanner():
                             f'[Monitor] {market["title"][:45]} | '
                             f'{seconds_left:.0f}s | '
                             f'CL: ${cl_price:,.2f} ({cl_pct:+.4f}%) | '
-                            f'UP:{market["up_price"]} DOWN:{market["down_price"]}'
+                            f'UP:{market["up_price"]} DOWN:{market["down_price"]} Vol:${market["volume"]:.0f}'
                         )
                         continue
 
