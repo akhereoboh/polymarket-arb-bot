@@ -174,7 +174,7 @@ async def get_active_btc_markets(session) -> list:
             continue
 
         volume = float(m.get('volume', 0))
-        if volume < 800:
+        if volume < 5000:
             print(f'[Skip] Low volume ${volume:.0f} — {e["title"]}')
             continue
 
@@ -455,7 +455,7 @@ async def market_scanner():
                         import time as _time
                         latest_ts = max(t.get('timestamp', 0) for t in recent_trades)
                         age = _time.time() - latest_ts
-                        if age > 300:
+                        if age > 60:
                             print(f'  → Last trade was {age/60:.1f} min ago — skipping')
                             continue
                             
