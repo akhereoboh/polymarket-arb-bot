@@ -239,7 +239,9 @@ def calc_position_size(direction: str, up_price: float,
 async def place_trade(market: dict, direction: str,
                       shares: int, confidence: float):
     token_id = market['up_token'] if direction == 'up' else market['down_token']
-    price    = market['up_price'] if direction == 'up' else market['down_price']
+    # add 0.01 buffer to hit actual ask price
+    raw_price = market['up_price'] if direction == 'up' else market['down_price']
+    price = round(min(raw_price + 0.01, 0.99), 2)]
     side_str = 'UP' if direction == 'up' else 'DOWN'
 
     print(
@@ -263,7 +265,7 @@ async def place_trade(market: dict, direction: str,
                 side=Side.BUY,
             ),
             options=PartialCreateOrderOptions(tick_size='0.01', neg_risk=False),
-            order_type=OrderType.GTC,
+            order_type=OrderType.FOK,
         )
         print(f'  [Order] Result: {result}')
         return result
