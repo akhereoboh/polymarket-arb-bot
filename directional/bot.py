@@ -476,8 +476,8 @@ async def market_scanner():
                         import time as _time
                         latest_ts = max(t.get('timestamp', 0) for t in recent_trades)
                         age = _time.time() - latest_ts
-                        if time.time() - latest_ts > 120:
-                            print(f'  → Last trade was {(time.time()-latest_ts)/60:.1f} min ago — skipping')
+                        if _time.time() - latest_ts > 120:
+                            print(f'  → Last trade was {(_time.time()-latest_ts)/60:.1f} min ago — skipping')
                             continue
                             
                         print(f'  → Active market — last trade {(time.time()-latest_ts):.0f}s ago')
