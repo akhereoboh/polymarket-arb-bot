@@ -241,7 +241,7 @@ async def place_trade(market: dict, direction: str,
     token_id = market['up_token'] if direction == 'up' else market['down_token']
     # add 0.01 buffer to hit actual ask price
     raw_price = market['up_price'] if direction == 'up' else market['down_price']
-    price = round(min(raw_price + 0.01, 0.99), 2)]
+    price = round(min(raw_price + 0.01, 0.99), 2)
     side_str = 'UP' if direction == 'up' else 'DOWN'
 
     print(
