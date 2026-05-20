@@ -190,28 +190,36 @@ async def get_active_btc_markets(session) -> list:
 
 
 def check_signal(cl_price: float, opening_price: float,
-                 binance_now: float, binance_60s_ago: float) -> tuple[str, float]:
-    """
-    Returns (direction, confidence_pct) or ('none', 0).
-    direction: 'up' | 'down' | 'none'
-    """
+                 binance_now: float, binance_60s_ago: float,
+                 up_price: float, down_price: float) -> tuple[str, float]:
     cl_pct    = (cl_price - opening_price) / opening_price * 100
     bn_pct    = (binance_now - binance_60s_ago) / binance_60s_ago * 100
 
     cl_up     = cl_pct  > 0
     bn_up     = bn_pct  > 0
     cl_strong = abs(cl_pct) >= MIN_MOVE_PCT
-    bn_strong = abs(bn_pct) >= MIN_MOVE_PCT / 2  # binance threshold slightly lower
 
-    # both must agree on direction
+    # condition 1 — chainlink and binance must agree
     if cl_up != bn_up:
         return 'none', 0.0
 
+    # condition 2 — chainlink move must be strong enough
     if not cl_strong:
         return 'none', 0.0
 
     direction = 'up' if cl_up else 'down'
-    confidence = (abs(cl_pct) + abs(bn_pct)) / 2
+
+    # condition 3 — polymarket crowd must not strongly disagree
+    # if we say UP, crowd price for UP must be >= 0.40 (crowd not strongly against us)
+    # if we say DOWN, crowd price for DOWN must be >= 0.40
+    crowd_price = up_price if direction == 'up' else down_price
+    if crowd_price < 0.35:
+        print(f'  → Crowd strongly disagrees ({crowd_price}) — skipping')
+        return 'none', 0.0
+
+    # bonus confidence if crowd agrees (price > 0.55)
+    crowd_bonus = 0.05 if crowd_price > 0.55 else 0.0
+    confidence = (abs(cl_pct) + abs(bn_pct)) / 2 + crowd_bonus
     return direction, confidence
 
 
@@ -402,7 +410,8 @@ async def market_scanner():
 
                     # check signal
                     direction, confidence = check_signal(
-                        cl_price, opening_price, binance_now, bn_60s_ago
+                        cl_price, opening_price, binance_now, bn_60s_ago,
+                        market['up_price'], market['down_price']
                     )
 
                     cl_pct = (cl_price - opening_price) / opening_price * 100
