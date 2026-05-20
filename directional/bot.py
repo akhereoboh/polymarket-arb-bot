@@ -435,6 +435,32 @@ async def market_scanner():
                         print(f'  → Signals disagree or too weak — skipping')
                         continue
 
+                    if direction == 'none':
+                        print(f'  → Signals disagree or too weak — skipping')
+                        continue
+
+                    # check price not too one-sided — no liquidity at extremes
+                    trade_price = market['up_price'] if direction == 'up' else market['down_price']
+                    if trade_price < 0.15 or trade_price > 0.85:
+                        print(f'  → Market too one-sided ({trade_price}) — no liquidity, skipping')
+                        continue
+
+                    # check order book has actual liquidity on our side
+                    try:
+                        token_id = market['up_token'] if direction == 'up' else market['down_token']
+                        client = get_client()
+                        book = client.get_order_book(token_id)
+                        asks = book.get('asks', [])
+                        total_available = sum(float(a['size']) for a in asks)
+                        if total_available < 5:
+                            print(f'  → No liquidity in order book ({total_available:.1f} shares) — skipping')
+                            continue
+                        print(f'  → Order book OK — {total_available:.1f} shares available')
+                    except Exception as book_err:
+                        print(f'  → Order book check failed: {book_err} — skipping')
+                        continue
+
+
                     # calculate position
                     shares, cost = calc_position_size(
                         direction,
