@@ -90,6 +90,17 @@ def get_client():
         funder=os.getenv('POLYMARKET_FUNDER'),
     )
 
+async def get_balance() -> float:
+    try:
+        client = get_client()
+        bal = client.get_balance_allowance(
+            BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=3)
+        )
+        return int(bal.get('balance', 0)) / 1_000_000
+    except Exception as e:
+        print(f'[Balance] Error: {e}')
+        return 0.0
+
 
 async def get_chainlink_price(session) -> tuple[float, int]:
     payload = {
@@ -352,11 +363,7 @@ async def market_scanner():
                         opening = await get_opening_chainlink_price(session, end_time)
                         _opening_prices[cid] = opening
                         print(f'[Market] New: {market["title"]} | {seconds_left:.0f}s left | Opening CL: ${opening:,.2f}')
-                        print(
-                            f'[Market] New: {market["title"]} | '
-                            f'{seconds_left:.0f}s left | '
-                            f'Opening CL: ${cl_price:,.2f}'
-                        )
+                        
 
                     # skip if already traded
                     if cid in _traded:
@@ -421,8 +428,11 @@ async def market_scanner():
                     _traded.add(cid)
                     log_signal(market, direction, shares, cl_pct, bn_pct, confidence,
                                cl_price, _opening_prices[cid], _btc_history[-1][1])
+                    bal_before = await get_balance()
                     await place_trade(market, direction, shares, confidence)
-
+                    # after placing order
+                    bal_after = await get_balance()
+                    print(f'[Trade] Balance before: ${bal_before:.4f} | After: ${bal_after:.4f} | Change: ${bal_after-bal_before:+.4f}')
             except Exception as e:
                 print(f'[Scanner] Error: {e}')
 
