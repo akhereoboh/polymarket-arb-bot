@@ -460,6 +460,29 @@ async def market_scanner():
                         print(f'  → Order book check failed: {book_err} — skipping')
                         continue
 
+                    # check recent trade activity — if no recent trades, no liquidity
+                    try:
+                        async with session.get(
+                            f'https://data-api.polymarket.com/trades?market={cid}&limit=5',
+                            timeout=aiohttp.ClientTimeout(total=3)
+                        ) as r:
+                            recent_trades = await r.json()
+                        
+                        if not recent_trades:
+                            print(f'  → No recent trades — no liquidity, skipping')
+                            continue
+                        
+                        # check most recent trade was within last 2 minutes
+                        import time
+                        latest_ts = max(t.get('timestamp', 0) for t in recent_trades)
+                        if time.time() - latest_ts > 120:
+                            print(f'  → Last trade was {(time.time()-latest_ts)/60:.1f} min ago — skipping')
+                            continue
+                            
+                        print(f'  → Active market — last trade {(time.time()-latest_ts):.0f}s ago')
+                    except Exception as liq_err:
+                        print(f'  → Liquidity check failed: {liq_err} — skipping')
+                        continue
 
                     # calculate position
                     shares, cost = calc_position_size(
