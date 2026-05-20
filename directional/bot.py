@@ -438,7 +438,7 @@ async def market_scanner():
                         print(f'[Trade] ✅ Order confirmed on Polymarket — balance decreased')
                     else:
                         print(f'[Trade] ⚠️ Balance unchanged — order may not have filled')
-                print(f'[Scanner] Error: {e}')
+          
 
             except Exception as err:
                 print(f'[Scanner] Error: {err}')
