@@ -52,8 +52,7 @@ def log_signal(market: dict, direction: str, shares: int,
         if not file_exists:
             writer.writeheader()
         
-        raw_price = market['up_price'] if direction == 'up' else market['down_price']
-        price = round(min(raw_price + 0.05, 0.99), 2)
+        price = market['up_price'] if direction == 'up' else market['down_price']
         writer.writerow({
             'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
             'market': market['title'],
@@ -257,7 +256,7 @@ async def place_trade(market: dict, direction: str,
     token_id = market['up_token'] if direction == 'up' else market['down_token']
     # add 0.01 buffer to hit actual ask price
     raw_price = market['up_price'] if direction == 'up' else market['down_price']
-    price = round(min(raw_price + 0.01, 0.99), 2)
+    price = round(min(raw_price + 0.05, 0.99), 2)
     side_str = 'UP' if direction == 'up' else 'DOWN'
 
     print(
@@ -435,31 +434,12 @@ async def market_scanner():
                         print(f'  → Signals disagree or too weak — skipping')
                         continue
 
-                    if direction == 'none':
-                        print(f'  → Signals disagree or too weak — skipping')
-                        continue
-
                     # check price not too one-sided — no liquidity at extremes
                     trade_price = market['up_price'] if direction == 'up' else market['down_price']
                     if trade_price < 0.15 or trade_price > 0.85:
                         print(f'  → Market too one-sided ({trade_price}) — no liquidity, skipping')
                         continue
-
-                    # check order book has actual liquidity on our side
-                    try:
-                        token_id = market['up_token'] if direction == 'up' else market['down_token']
-                        client = get_client()
-                        book = client.get_order_book(token_id)
-                        asks = book.get('asks', [])
-                        total_available = sum(float(a['size']) for a in asks)
-                        if total_available < 5:
-                            print(f'  → No liquidity in order book ({total_available:.1f} shares) — skipping')
-                            continue
-                        print(f'  → Order book OK — {total_available:.1f} shares available')
-                    except Exception as book_err:
-                        print(f'  → Order book check failed: {book_err} — skipping')
-                        continue
-
+                   
                     # check recent trade activity — if no recent trades, no liquidity
                     try:
                         async with session.get(
