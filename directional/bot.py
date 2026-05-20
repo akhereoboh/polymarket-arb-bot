@@ -175,7 +175,7 @@ async def get_active_btc_markets(session) -> list:
             continue
 
         volume = float(m.get('volume', 0))
-        if volume < 500:
+        if volume < 800:
             print(f'[Skip] Low volume ${volume:.0f} — {e["title"]}')
             continue
 
