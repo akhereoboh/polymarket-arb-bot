@@ -53,7 +53,7 @@ def log_signal(market: dict, direction: str, shares: int,
             writer.writeheader()
         
         raw_price = market['up_price'] if direction == 'up' else market['down_price']
-        price = round(min(raw_price + 0.01, 0.99), 2)
+        price = round(min(raw_price + 0.02, 0.99), 2)
         writer.writerow({
             'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
             'market': market['title'],
