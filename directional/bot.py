@@ -472,15 +472,14 @@ async def market_scanner():
                             print(f'  → No recent trades — no liquidity, skipping')
                             continue
                         
-                        # check most recent trade was within last 2 minutes
                         import time as _time
                         latest_ts = max(t.get('timestamp', 0) for t in recent_trades)
                         age = _time.time() - latest_ts
-                        if _time.time() - latest_ts > 120:
-                            print(f'  → Last trade was {(_time.time()-latest_ts)/60:.1f} min ago — skipping')
+                        if age > 120:
+                            print(f'  → Last trade was {age/60:.1f} min ago — skipping')
                             continue
                             
-                        print(f'  → Active market — last trade {(time.time()-latest_ts):.0f}s ago')
+                        print(f'  → Active market — last trade {age:.0f}s ago')
                     except Exception as liq_err:
                         print(f'  → Liquidity check failed: {liq_err} — skipping')
                         continue
