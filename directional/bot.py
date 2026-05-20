@@ -205,13 +205,24 @@ def check_signal(cl_price: float, opening_price: float,
     bn_up     = bn_pct  > 0
     cl_strong = abs(cl_pct) >= MIN_MOVE_PCT
 
-    # condition 1 — chainlink and binance must agree
+   
+    # condition 1 — chainlink move must be strong enough
+    if not cl_strong:
+        return 'none', 0.0
+
+    # condition 2 — chainlink and binance must agree on direction
     if cl_up != bn_up:
         return 'none', 0.0
 
-    # condition 2 — chainlink move must be strong enough
-    if not cl_strong:
-        return 'none', 0.0
+    # condition 3 — conflict detector: signals must not contradict each other
+    # if CL says +0.04% but BN says -0.03%, that's noise not signal
+    spread = abs(abs(cl_pct) - abs(bn_pct))
+    avg = (abs(cl_pct) + abs(bn_pct)) / 2
+    if avg > 0:
+        conflict_ratio = spread / avg
+        if conflict_ratio > 1.5:
+            print(f'  → Signal conflict (CL:{cl_pct:+.4f}% BN:{bn_pct:+.4f}% ratio:{conflict_ratio:.2f}) — skipping')
+            return 'none', 0.0
 
     direction = 'up' if cl_up else 'down'
 
