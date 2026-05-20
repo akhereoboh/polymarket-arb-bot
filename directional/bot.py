@@ -263,7 +263,7 @@ async def place_trade(market: dict, direction: str,
                 side=Side.BUY,
             ),
             options=PartialCreateOrderOptions(tick_size='0.01', neg_risk=False),
-            order_type=OrderType.FOK,
+            order_type=OrderType.GTC,
         )
         print(f'  [Order] Result: {result}')
         return result
@@ -430,12 +430,18 @@ async def market_scanner():
                                cl_price, _opening_prices[cid], _btc_history[-1][1])
                     bal_before = await get_balance()
                     await place_trade(market, direction, shares, confidence)
-                    # after placing order
+                    await asyncio.sleep(2)
                     bal_after = await get_balance()
-                    print(f'[Trade] Balance before: ${bal_before:.4f} | After: ${bal_after:.4f} | Change: ${bal_after-bal_before:+.4f}')
-            except Exception as e:
+                    change = bal_after - bal_before
+                    print(f'[Trade] Balance: ${bal_before:.4f} → ${bal_after:.4f} | Change: ${change:+.4f}')
+                    if change < 0:
+                        print(f'[Trade] ✅ Order confirmed on Polymarket — balance decreased')
+                    else:
+                        print(f'[Trade] ⚠️ Balance unchanged — order may not have filled')
                 print(f'[Scanner] Error: {e}')
 
+            except Exception as e:
+                print(f'[Scanner] Error: {e}')
             await asyncio.sleep(5)
 
 
