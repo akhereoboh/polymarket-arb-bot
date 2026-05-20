@@ -52,7 +52,8 @@ def log_signal(market: dict, direction: str, shares: int,
         if not file_exists:
             writer.writeheader()
         
-        price = market['up_price'] if direction == 'up' else market['down_price']
+        raw_price = market['up_price'] if direction == 'up' else market['down_price']
+        price = round(min(raw_price + 0.01, 0.99), 2)
         writer.writerow({
             'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
             'market': market['title'],
@@ -265,7 +266,7 @@ async def place_trade(market: dict, direction: str,
                 side=Side.BUY,
             ),
             options=PartialCreateOrderOptions(tick_size='0.01', neg_risk=False),
-            order_type=OrderType.FOK,
+            order_type=OrderType.FAK,
         )
         print(f'  [Order] Result: {result}')
         return result
