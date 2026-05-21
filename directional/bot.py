@@ -23,7 +23,6 @@ from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
 DRY_RUN       = os.getenv('DRY_RUN', 'true').lower() == 'true'
 MIN_MOVE_PCT  = float(os.getenv('MIN_MOVE_PCT', '0.05'))  # minimum % move to trade
 TRADE_AMOUNT  = float(os.getenv('TRADE_AMOUNT', '20'))    # USD per trade
-ENTRY_WINDOW  = 60    # seconds before resolution to consider entry
 RPC           = 'https://polygon-bor-rpc.publicnode.com'
 CL_CONTRACT   = '0xc907E116054Ad103354f2D350FD2514433D57F6f'
 
@@ -148,7 +147,8 @@ async def get_active_btc_markets(session) -> list:
     markets = []
 
     for e in events:
-        if 'btc-updown-5m' not in e.get('slug', ''):
+        slug = e.get('slug', '')
+        if 'btc-updown-5m' not in slug and 'btc-updown-15m' not in slug:
             continue
         if not e.get('active') or e.get('closed'):
             continue
@@ -163,7 +163,8 @@ async def get_active_btc_markets(session) -> list:
         if seconds_left < 0:
             continue
         if seconds_left > 360:
-            print(f'[Waiting] {e["title"]} | {seconds_left:.0f}s left')
+            tf = '15m' if 'btc-updown-15m' in e.get('slug','') else '5m'
+            print(f'[Waiting] [{tf}] {e["title"]} | {seconds_left:.0f}s left')
             continue
 
         m = e['markets'][0]
@@ -189,6 +190,7 @@ async def get_active_btc_markets(session) -> list:
             'up_price':     float(prices[0]),
             'down_price':   float(prices[1]),
             'volume':       volume,
+            'timeframe':    '15m' if 'btc-updown-15m' in e['slug'] else '5m',
         })
         
 
@@ -300,9 +302,10 @@ async def place_trade(market: dict, direction: str,
         return {'status': 'error', 'error': str(e)}
     
     
-async def get_opening_chainlink_price(session, market_end_time) -> float:
-    """Get Chainlink price at market start (5 minutes before end)."""
-    market_start_ts = market_end_time.timestamp() - 300  # 5 min before end
+async def get_opening_chainlink_price(session, market_end_time, timeframe='5m') -> float:
+    """Get Chainlink price at market start."""
+    lookback = 900 if timeframe == '15m' else 300  # 15 min or 5 min
+    market_start_ts = market_end_time.timestamp() - lookback
     
     # get current round
     payload = {
@@ -388,7 +391,7 @@ async def market_scanner():
 
                     # store opening price when market first seen
                     if cid not in _opening_prices:
-                        opening = await get_opening_chainlink_price(session, end_time)
+                        opening = await get_opening_chainlink_price(session, end_time, market.get('timeframe', '5m'))
                         _opening_prices[cid] = opening
                         print(f'[Market] New: {market["title"]} | {seconds_left:.0f}s left | Opening CL: ${opening:,.2f}')
                         
@@ -400,7 +403,9 @@ async def market_scanner():
                     opening_price = _opening_prices[cid]
 
                     # only check in entry window
-                    if seconds_left > ENTRY_WINDOW:
+                    # entry window: 120s for 15m, 60s for 5m
+                    entry_window = 120 if market.get('timeframe') == '15m' else 60
+                    if seconds_left > entry_window:
                         cl_pct = (cl_price - opening_price) / opening_price * 100
                         print(
                             f'[Monitor] {market["title"][:45]} | '
