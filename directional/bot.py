@@ -291,7 +291,6 @@ def check_signal(cl_price: float, opening_price: float,
             print(f'  → Momentum against signal — skipping')
             return 'none', 0.0
 
-    # condition 8 — timing: does BTC have enough time to confirm direction?
     # condition 8 — timing: BTC must be moving fast enough to confirm direction
     bt_30s_ago = None
     for ts, px in reversed(btc_history):
@@ -301,12 +300,9 @@ def check_signal(cl_price: float, opening_price: float,
 
     if bt_30s_ago:
         btc_speed = abs(binance_now - bt_30s_ago) / 30  # dollars per second
-        if btc_speed > 0:
-            distance = abs(binance_now - binance_opening)
-            time_needed = distance / btc_speed
-            if time_needed > seconds_left:
-                print(f'  → Timing: BTC needs {time_needed:.0f}s but only {seconds_left:.0f}s left — skipping')
-                return 'none', 0.0
+        if btc_speed < 0.30:
+            print(f'  → BTC too slow ({btc_speed:.3f}$/s) — not enough momentum, skipping')
+            return 'none', 0.0
 
     # bonus confidence if crowd agrees
     crowd_bonus = 0.05 if crowd_price > 0.55 else 0.0
