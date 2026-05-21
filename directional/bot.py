@@ -458,28 +458,28 @@ async def market_scanner():
                         continue
                    
                     # check recent trade activity — if no recent trades, no liquidity
-                    try:
-                        async with session.get(
-                            f'https://data-api.polymarket.com/trades?market={cid}&limit=5',
-                            timeout=aiohttp.ClientTimeout(total=3)
-                        ) as r:
-                            recent_trades = await r.json()
+                    # try:
+                    #     async with session.get(
+                    #         f'https://data-api.polymarket.com/trades?market={cid}&limit=5',
+                    #         timeout=aiohttp.ClientTimeout(total=3)
+                    #     ) as r:
+                    #         recent_trades = await r.json()
                         
-                        if not recent_trades:
-                            print(f'  → No recent trades — no liquidity, skipping')
-                            continue
+                    #     if not recent_trades:
+                    #         print(f'  → No recent trades — no liquidity, skipping')
+                    #         continue
                         
-                        import time as _time
-                        latest_ts = max(t.get('timestamp', 0) for t in recent_trades)
-                        age = _time.time() - latest_ts
-                        if age > 120:
-                            print(f'  → Last trade was {age/60:.1f} min ago — skipping')
-                            continue
+                    #     import time as _time
+                    #     latest_ts = max(t.get('timestamp', 0) for t in recent_trades)
+                    #     age = _time.time() - latest_ts
+                    #     if age > 120:
+                    #         print(f'  → Last trade was {age/60:.1f} min ago — skipping')
+                    #         continue
                             
-                        print(f'  → Active market — last trade {age:.0f}s ago')
-                    except Exception as liq_err:
-                        print(f'  → Liquidity check failed: {liq_err} — skipping')
-                        continue
+                    #     print(f'  → Active market — last trade {age:.0f}s ago')
+                    # except Exception as liq_err:
+                    #     print(f'  → Liquidity check failed: {liq_err} — skipping')
+                    #     continue
 
                     # calculate position
                     shares, cost = calc_position_size(

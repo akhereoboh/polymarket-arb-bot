@@ -1,19 +1,14 @@
-import requests
+# import requests
 
-url = "https://gamma-api.polymarket.com/events/keyset?limit=20&closed=false&order=volume24hr&ascending=false"
-resp = requests.get(url)
-data = resp.json()
+# # Replace with your bot token from BotFather
+# BOT_TOKEN = "8222724046:AAHWJwd4hAs_hnDOQXPbLkdegXyOifsIiIE"
 
-events = data if isinstance(data, list) else data.get("events", [])
+# # Get updates from your bot
+# url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+# resp = requests.get(url)
+# data = resp.json()
 
-print("\n--- Active Events ---")
-for event in events:
-    title = event.get("title", "")
-    end_time = event.get("end_date")
-    print(f"Event: {title} | Ends: {end_time}")
-
-    for m in event.get("markets", []):
-        q = m.get("question")
-        volume = m.get("volume")
-        print(f"   Market: {q} | Volume: {volume}")
-    print()
+# # Print chat IDs from updates
+# for update in data["result"]:
+#     chat_id = update["message"]["chat"]["id"]
+#     print("Chat ID:", chat_id)
