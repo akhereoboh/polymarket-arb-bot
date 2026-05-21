@@ -356,7 +356,7 @@ async def price_monitor():
                 now   = time.time()
                 _btc_history.append((now, price))
                 # keep only last 2 minutes
-                cutoff = now - 120
+                cutoff = now - 1200
                 while _btc_history and _btc_history[0][0] < cutoff:
                     _btc_history.pop(0)
             except Exception as e:
@@ -417,7 +417,8 @@ async def market_scanner():
 
                     # get binance 60s ago
                     now_ts     = time.time()
-                    target_ts  = now_ts - 60
+                    lookback = 900 if market.get('timeframe') == '15m' else 300
+                    target_ts  = now_ts - lookback
                     bn_60s_ago = None
                     for ts, px in reversed(_btc_history):
                         if ts <= target_ts:
