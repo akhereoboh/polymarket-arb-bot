@@ -208,16 +208,20 @@ def check_signal(cl_price: float, opening_price: float,
     cl_strong = abs(cl_pct) >= MIN_MOVE_PCT
 
    
-    # condition 1 — chainlink move must be strong enough
+# condition 1 — chainlink move must be strong enough
     if not cl_strong:
         return 'none', 0.0
 
-    # condition 2 — chainlink and binance must agree on direction
+    # condition 2 — binance move must also be strong enough independently
+    bn_strong = abs(bn_pct) >= MIN_MOVE_PCT
+    if not bn_strong:
+        return 'none', 0.0
+
+    # condition 3 — both must agree on direction
     if cl_up != bn_up:
         return 'none', 0.0
 
-    # condition 3 — conflict detector: signals must not contradict each other
-    # if CL says +0.04% but BN says -0.03%, that's noise not signal
+    # condition 4 — conflict detector: magnitudes must not wildly differ
     spread = abs(abs(cl_pct) - abs(bn_pct))
     avg = (abs(cl_pct) + abs(bn_pct)) / 2
     if avg > 0:
@@ -228,15 +232,13 @@ def check_signal(cl_price: float, opening_price: float,
 
     direction = 'up' if cl_up else 'down'
 
-    # condition 3 — polymarket crowd must not strongly disagree
-    # if we say UP, crowd price for UP must be >= 0.40 (crowd not strongly against us)
-    # if we say DOWN, crowd price for DOWN must be >= 0.40
+    # condition 5 — crowd must not strongly disagree
     crowd_price = up_price if direction == 'up' else down_price
     if crowd_price < 0.35:
         print(f'  → Crowd strongly disagrees ({crowd_price}) — skipping')
         return 'none', 0.0
 
-    # bonus confidence if crowd agrees (price > 0.55)
+    # bonus confidence if crowd agrees
     crowd_bonus = 0.05 if crowd_price > 0.55 else 0.0
     confidence = (abs(cl_pct) + abs(bn_pct)) / 2 + crowd_bonus
     return direction, confidence
