@@ -48,6 +48,42 @@ _opening_prices = {}      # condition_id -> chainlink opening price
 LOG_FILE = os.path.join(os.path.dirname(__file__), 'signals_log.csv')
 
 
+SKIPPED_LOG_FILE = os.path.join(os.path.dirname(__file__), 'skipped_signals.csv')
+
+
+def log_skipped_signal(market: dict, direction: str, confidence: float,
+                       cl_pct: float, bn_pct: float, cl_price: float,
+                       binance_price: float, skipped_price: float, reason: str):
+    """Persist a skipped signal so we can later resolve via gamma."""
+    file_exists = Path(SKIPPED_LOG_FILE).exists()
+    with open(SKIPPED_LOG_FILE, 'a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            'timestamp', 'market', 'condition_id', 'end_time',
+            'timeframe', 'direction', 'confidence',
+            'cl_pct', 'bn_pct', 'cl_price', 'binance_price',
+            'skipped_price', 'reason', 'outcome', 'would_have_won'
+        ])
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow({
+            'timestamp':      datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+            'market':         market['title'],
+            'condition_id':   market['condition_id'],
+            'end_time':       market['end_time'].strftime('%Y-%m-%d %H:%M:%S'),
+            'timeframe':      market.get('timeframe', '?'),
+            'direction':      direction.upper(),
+            'confidence':     round(confidence, 4),
+            'cl_pct':         round(cl_pct, 4),
+            'bn_pct':         round(bn_pct, 4),
+            'cl_price':       round(cl_price, 2),
+            'binance_price':  round(binance_price, 2),
+            'skipped_price':  skipped_price,
+            'reason':         reason,
+            'outcome':        'PENDING',
+            'would_have_won': '',
+        })
+
+
 def log_signal(market: dict, direction: str, shares: int,
                cl_pct: float, bn_pct: float, confidence: float,
                cl_price: float, opening_price: float, binance_price: float):
@@ -579,6 +615,9 @@ async def market_scanner():
                     trade_price = market['up_price'] if direction == 'up' else market['down_price']
                     if trade_price < 0.15 or trade_price > 0.85:
                         print(f'  → Market too one-sided ({trade_price}) — poor risk/reward, skipping')
+                        log_skipped_signal(market, direction, confidence, cl_pct, bn_pct,
+                                           cl_price, _btc_history[-1][1], trade_price,
+                                           reason='one_sided')
                         continue
 
                     # calculate position
