@@ -292,6 +292,12 @@ def check_signal(cl_price: float, opening_price: float,
             return 'none', 0.0
 
 
+    # bonus confidence if crowd agrees
+    crowd_bonus = 0.05 if crowd_price > 0.55 else 0.0
+    confidence  = (abs(cl_pct) + abs(bn_pct)) / 2 + crowd_bonus
+    return direction, confidence
+
+
 def calc_position_size(direction: str, up_price: float,
                        down_price: float, confidence: float) -> tuple[int, float]:
     price = up_price if direction == 'up' else down_price
