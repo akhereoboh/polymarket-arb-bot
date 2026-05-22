@@ -101,6 +101,19 @@ async def get_balance() -> float:
         print(f'[Balance] Error: {e}')
         return 0.0
 
+async def get_order_book(token_id: str) -> dict:
+    """Get order book for a token. Returns asks and bids."""
+    try:
+        client = get_client()
+        book = client.get_order_book(token_id)
+        # book has .asks and .bids as list of {price, size} dicts
+        asks = book.get('asks', []) if isinstance(book, dict) else (book.asks if hasattr(book, 'asks') else [])
+        bids = book.get('bids', []) if isinstance(book, dict) else (book.bids if hasattr(book, 'bids') else [])
+        return {'asks': asks, 'bids': bids}
+    except Exception as e:
+        print(f'[OrderBook] Error: {e}')
+        return {'asks': [], 'bids': []}
+
 
 async def get_chainlink_price(session) -> tuple[float, int]:
     payload = {
@@ -319,7 +332,24 @@ async def place_trade(market: dict, direction: str,
                       shares: int, confidence: float):
     token_id = market['up_token'] if direction == 'up' else market['down_token']
     raw_price = market['up_price'] if direction == 'up' else market['down_price']
-    price    = round(min(raw_price + 0.05, 0.99), 2)
+
+    # check order book for available liquidity at our price
+    book = await get_order_book(token_id)
+    asks = sorted(book['asks'], key=lambda x: float(x['price']))
+
+    # find best ask at or below our max price (raw + 0.05)
+    max_price = round(min(raw_price + 0.05, 0.99), 2)
+    available_asks = [a for a in asks if float(a['price']) <= max_price]
+
+    if not available_asks:
+        print(f'  → No sellers in order book at or below {max_price} — skipping')
+        return {'status': 'no_liquidity'}
+
+    # use actual best ask price + tiny buffer
+    best_ask = float(available_asks[0]['price'])
+    total_available = sum(float(a['size']) for a in available_asks)
+    price = round(min(best_ask + 0.01, 0.99), 2)
+    print(f'  → Order book: best ask {best_ask} | available shares: {total_available:.0f}')
     side_str = 'UP' if direction == 'up' else 'DOWN'
 
     print(
