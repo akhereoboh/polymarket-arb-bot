@@ -96,6 +96,12 @@ async def place_gtc_fallback(
 
     # GTC sits at the current best ask (no buffer — more passive than FAK)
     best_ask = float(asks[0]['price'])
+    # Sanity cap: don't pay more than reference + 0.10 even on thin markets
+    raw_price = market['up_price'] if direction == 'up' else market['down_price']
+    max_acceptable = round(min(raw_price + 0.10, 0.99), 2)
+    if best_ask > max_acceptable:
+        print(f'  [GTC] Best ask {best_ask} exceeds max acceptable {max_acceptable} (raw={raw_price}) — skipping')
+        return {'status': 'price_too_high', 'best_ask': best_ask, 'max': max_acceptable}
     gtc_price = round(min(best_ask, 0.99), 2)
 
     seconds_left = (market['end_time'] - datetime.now(timezone.utc)).total_seconds()

@@ -355,8 +355,21 @@ async def place_trade(market: dict, direction: str,
     available_asks = [a for a in asks if float(a['price']) <= max_price]
 
     if not available_asks:
-        print(f'  → No sellers in order book at or below {max_price} — skipping')
-        return {'status': 'no_liquidity'}
+        if not available_asks:
+            print(f'  → No sellers at or below {max_price} — routing to GTC fallback')
+            gtc_result = await place_gtc_fallback(
+                client_factory=get_client,
+                market=market,
+                direction=direction,
+                shares=shares,
+                confidence=confidence,
+                book=book,
+                OrderArgs=OrderArgs,
+                OrderType=OrderType,
+                PartialCreateOrderOptions=PartialCreateOrderOptions,
+                Side=Side,
+            )
+            return gtc_result
 
     # use actual best ask price + tiny buffer
     best_ask = float(available_asks[0]['price'])
