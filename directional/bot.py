@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
-load_dotenv(os.path)
+
 from telegram_alerts import (
     alert_entry,
     schedule_outcome_check,
