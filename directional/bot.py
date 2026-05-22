@@ -385,8 +385,29 @@ async def place_trade(market: dict, direction: str,
             options=PartialCreateOrderOptions(tick_size='0.01', neg_risk=False),
             order_type=OrderType.FAK,
         )
-        print(f'  [Order] Result: {result}')
-        return result
+        print(f'  [Order] FAK result: {result}')
+
+        filled, shares_filled = fak_filled(result)
+        if filled:
+            print(f'  [Order] FAK filled {shares_filled} shares')
+            return result
+
+        # FAK didn't fill — try GTC fallback
+        print(f'  [Order] FAK no-fill — trying GTC fallback')
+        gtc_result = await place_gtc_fallback(
+            client_factory=get_client,
+            market=market,
+            direction=direction,
+            shares=shares,
+            confidence=confidence,
+            book=book,
+            OrderArgs=OrderArgs,
+            OrderType=OrderType,
+            PartialCreateOrderOptions=PartialCreateOrderOptions,
+            Side=Side,
+        )
+        return gtc_result
+
     except Exception as e:
         print(f'  [Order] Error: {e}')
         return {'status': 'error', 'error': str(e)}
