@@ -11,6 +11,7 @@ from pathlib import Path
 
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
+load_dotenv(os.path)
 from telegram_alerts import (
     alert_entry,
     schedule_outcome_check,
@@ -37,6 +38,17 @@ MIN_MOVE_PCT  = float(os.getenv('MIN_MOVE_PCT', '0.05'))  # minimum % move to tr
 TRADE_AMOUNT  = float(os.getenv('TRADE_AMOUNT', '20'))    # USD per trade
 RPC           = 'https://polygon-bor-rpc.publicnode.com'
 CL_CONTRACT   = '0xc907E116054Ad103354f2D350FD2514433D57F6f'
+
+
+# Early-entry mode config
+EARLY_ENTRY_WINDOW_15M = 300      # seconds before close
+EARLY_ENTRY_WINDOW_5M  = 90
+EARLY_MIN_CONFIDENCE   = 0.15
+EARLY_MIN_MOMENTUM     = 7
+EARLY_MIN_CL_MOVE_PCT  = 0.10
+EARLY_FAK_BUFFER       = 0.15
+EARLY_GTC_BUFFER       = 0.20
+HARD_FILL_CAP          = 0.85
 
 # ── state ────────────────────────────────────────────────
 _traded         = set()   # condition_ids already traded this session
@@ -389,7 +401,14 @@ def check_signal(cl_price: float, opening_price: float,
     # bonus confidence if crowd agrees
     crowd_bonus = 0.05 if crowd_price > 0.55 else 0.0
     confidence  = (abs(cl_pct) + abs(bn_pct)) / 2 + crowd_bonus
-    return direction, confidence
+    # Pack diagnostics so callers can decide early-entry eligibility
+    momentum_info = {
+        'bn_confirmations': bn_confirmations,
+        'cl_confirmations': cl_confirmations,
+        'total_checks':     total_checks,
+        'total_score':      total_confirmations,
+    }
+    return direction, confidence, momentum_info
 
 
 def calc_position_size(direction: str, up_price: float,
@@ -410,7 +429,8 @@ def calc_position_size(direction: str, up_price: float,
 
 
 async def place_trade(market: dict, direction: str,
-                      shares: int, confidence: float):
+                      shares: int, confidence: float,
+                      early_mode: bool = False):
     token_id = market['up_token'] if direction == 'up' else market['down_token']
     raw_price = market['up_price'] if direction == 'up' else market['down_price']
 
@@ -418,8 +438,9 @@ async def place_trade(market: dict, direction: str,
     book = await get_order_book(token_id)
     asks = sorted(book['asks'], key=lambda x: float(x['price']))  # ascending ✅
 
-    # find best ask at or below our max price (raw + 0.05)
-    max_price = round(min(raw_price + 0.15, 0.85), 2)
+    # FAK ceiling: looser in early-entry mode, capped at 0.85 hard limit
+    fak_buffer = EARLY_FAK_BUFFER if early_mode else 0.05
+    max_price = round(min(raw_price + fak_buffer, HARD_FILL_CAP), 2)
     available_asks = [a for a in asks if float(a['price']) <= max_price]
 
     if not available_asks:
@@ -442,10 +463,10 @@ async def place_trade(market: dict, direction: str,
             )
         return gtc_result
 
-    # use actual best ask price + tiny buffer, capped at 0.85
+    # use actual best ask price + tiny buffer, capped at HARD_FILL_CAP
     best_ask = float(available_asks[0]['price'])
     total_available = sum(float(a['size']) for a in available_asks)
-    price = round(min(best_ask + 0.01, 0.85), 2)
+    price = round(min(best_ask + 0.01, HARD_FILL_CAP), 2)
     print(f'  → Order book: best ask {best_ask} | available shares: {total_available:.0f}')
     side_str = 'UP' if direction == 'up' else 'DOWN'
 
@@ -498,6 +519,7 @@ async def place_trade(market: dict, direction: str,
             OrderType=OrderType,
             PartialCreateOrderOptions=PartialCreateOrderOptions,
             Side=Side,
+            early_mode=early_mode,
         )
         return gtc_result
 
@@ -602,9 +624,15 @@ async def market_scanner():
                     opening_price = _opening_prices[cid]
 
                     # entry window: 120s for 15m, 60s for 5m
-                    entry_window = 120 if tf == '15m' else 60
+                    # Two entry windows now: early (strict criteria) and normal
+                    normal_window = 120 if tf == '15m' else 60
+                    early_window = EARLY_ENTRY_WINDOW_15M if tf == '15m' else EARLY_ENTRY_WINDOW_5M
 
-                    if seconds_left > entry_window:
+                    in_normal_window = seconds_left <= normal_window
+                    in_early_window = (not in_normal_window) and seconds_left <= early_window
+                    early_mode = in_early_window  # set flag for downstream
+
+                    if seconds_left > early_window:
                         cl_pct = (cl_price - opening_price) / opening_price * 100
                         print(
                             f'[Monitor] [{tf}] {market["title"][:40]} | '
@@ -630,7 +658,7 @@ async def market_scanner():
                     binance_now = _btc_history[-1][1]
 
                     # check signal
-                    direction, confidence = check_signal(
+                    direction, confidence, momentum_info = check_signal(
                         cl_price, opening_price,
                         binance_now, bn_opening,
                         market['up_price'], market['down_price'],
@@ -648,9 +676,18 @@ async def market_scanner():
                         f'  Direction: {direction.upper()} | Confidence: {confidence:.4f}%'
                     )
 
-                    if direction == 'none':
-                        print(f'  → Signals disagree or too weak — skipping')
-                        continue
+                    # Early-entry mode requires strict signal quality
+                    if early_mode:
+                        momentum_ok = momentum_info['total_score'] >= EARLY_MIN_MOMENTUM
+                        confidence_ok = confidence >= EARLY_MIN_CONFIDENCE
+                        cl_strong = abs(cl_pct) >= EARLY_MIN_CL_MOVE_PCT
+                        if not (momentum_ok and confidence_ok and cl_strong):
+                            print(f'  → [{tf}] Early-entry rejected: '
+                                  f'momentum={momentum_info["total_score"]}/8 (need >= {EARLY_MIN_MOMENTUM}), '
+                                  f'conf={confidence:.4f} (need >= {EARLY_MIN_CONFIDENCE}), '
+                                  f'cl_move={abs(cl_pct):.4f}% (need >= {EARLY_MIN_CL_MOVE_PCT}%) — waiting for normal window')
+                            continue
+                        print(f'  → [{tf}] EARLY ENTRY (mom={momentum_info["total_score"]}/8 conf={confidence:.4f} cl={cl_pct:+.4f}%)')
 
                     # check price not too one-sided — poor risk/reward at extremes
                     trade_price = market['up_price'] if direction == 'up' else market['down_price']
@@ -679,7 +716,7 @@ async def market_scanner():
                     log_signal(market, direction, shares, cl_pct, bn_pct, confidence,
                                cl_price, _opening_prices[cid], _btc_history[-1][1])
                     bal_before = await get_balance()
-                    trade_result = await place_trade(market, direction, shares, confidence)
+                    trade_result = await place_trade(market, direction, shares, confidence, early_mode=early_mode)
                     await asyncio.sleep(2)
                     bal_after = await get_balance()
                     change    = bal_after - bal_before

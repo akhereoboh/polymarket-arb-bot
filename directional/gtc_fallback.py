@@ -77,6 +77,7 @@ async def place_gtc_fallback(
     confidence: float,
     book: dict,             # the order book we already fetched in place_trade
     OrderArgs, OrderType, PartialCreateOrderOptions, Side,
+    early_mode: bool = False,
 ) -> dict:
     """
     Post a GTC order at a less aggressive price than the FAK attempt.
@@ -100,7 +101,8 @@ async def place_gtc_fallback(
     else:
         # We have asks on the book — use normal logic with sanity cap
         best_ask = float(asks[0]['price'])
-        max_acceptable = round(min(raw_price + 0.20, 0.85), 2)
+        gtc_buffer = 0.20 if early_mode else 0.10
+        max_acceptable = round(min(raw_price + gtc_buffer, 0.85), 2)
         if best_ask > max_acceptable:
             print(f'  [GTC] Best ask {best_ask} exceeds max acceptable {max_acceptable} (raw={raw_price}) — skipping')
             return {'status': 'price_too_high', 'best_ask': best_ask, 'max': max_acceptable}
