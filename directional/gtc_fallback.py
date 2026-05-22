@@ -94,9 +94,9 @@ async def place_gtc_fallback(
     raw_price = market['up_price'] if direction == 'up' else market['down_price']
 
     if not asks:
-        # No asks on the book — become the liquidity at fair value (raw_price)
-        gtc_price = round(min(raw_price, 0.99), 2)
-        print(f'  [GTC] Order book has zero asks — becoming liquidity at raw_price {gtc_price}')
+        # No asks on the book — post at reference + 0.05 and wait for sellers
+        gtc_price = round(min(raw_price + 0.05, 0.99), 2)
+        print(f'  [GTC] Order book has zero asks — posting at raw_price+0.05 = {gtc_price} (raw={raw_price})')
     else:
         # We have asks on the book — use normal logic with sanity cap
         best_ask = float(asks[0]['price'])
