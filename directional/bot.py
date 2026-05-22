@@ -8,6 +8,9 @@ from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 import csv
 from pathlib import Path
+
+
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 from telegram_alerts import (
     alert_entry,
     schedule_outcome_check,
@@ -19,7 +22,7 @@ from gtc_fallback import (
     active_gtc_count, set_on_fill_callback,
 )
 
-load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
+
 sys.path.insert(0, '/root/my-clob-client')
 
 from py_clob_client_v2 import (
