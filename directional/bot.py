@@ -49,6 +49,33 @@ LOG_FILE = os.path.join(os.path.dirname(__file__), 'signals_log.csv')
 
 
 SKIPPED_LOG_FILE = os.path.join(os.path.dirname(__file__), 'skipped_signals.csv')
+EXECUTION_LOG_FILE = os.path.join(os.path.dirname(__file__), 'execution_log.csv')
+
+
+def log_execution_event(market: dict, direction: str, reason: str,
+                        raw_price: float, attempted_price: float = None,
+                        best_ask: float = None, extra: str = ''):
+    """Log every signal-to-trade transition (skip, fire, fill, cancel) for diagnosis."""
+    file_exists = Path(EXECUTION_LOG_FILE).exists()
+    with open(EXECUTION_LOG_FILE, 'a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            'timestamp', 'market', 'condition_id', 'timeframe', 'direction',
+            'reason', 'raw_price', 'attempted_price', 'best_ask', 'extra'
+        ])
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow({
+            'timestamp':       datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+            'market':          market['title'],
+            'condition_id':    market['condition_id'],
+            'timeframe':       market.get('timeframe', ''),
+            'direction':       direction.upper() if direction else '',
+            'reason':          reason,
+            'raw_price':       round(raw_price, 4) if raw_price else '',
+            'attempted_price': round(attempted_price, 4) if attempted_price else '',
+            'best_ask':        round(best_ask, 4) if best_ask else '',
+            'extra':           extra,
+        })
 
 
 def log_skipped_signal(market: dict, direction: str, confidence: float,
@@ -392,13 +419,16 @@ async def place_trade(market: dict, direction: str,
     asks = sorted(book['asks'], key=lambda x: float(x['price']))  # ascending ✅
 
     # find best ask at or below our max price (raw + 0.05)
-    max_price = round(min(raw_price + 0.05, 0.99), 2)
+    max_price = round(min(raw_price + 0.15, 0.85), 2)
     available_asks = [a for a in asks if float(a['price']) <= max_price]
 
     if not available_asks:
-        if not available_asks:
-            print(f'  → No sellers at or below {max_price} — routing to GTC fallback')
-            gtc_result = await place_gtc_fallback(
+        print(f'  → No sellers at or below {max_price} — routing to GTC fallback')
+        all_asks_top = float(asks[0]['price']) if asks else None
+        log_execution_event(market, direction, 'fak_no_liquidity',
+                            raw_price, max_price, all_asks_top,
+                            extra=f'total_asks={len(asks)}')
+        gtc_result = await place_gtc_fallback(
                 client_factory=get_client,
                 market=market,
                 direction=direction,
@@ -410,12 +440,12 @@ async def place_trade(market: dict, direction: str,
                 PartialCreateOrderOptions=PartialCreateOrderOptions,
                 Side=Side,
             )
-            return gtc_result
+        return gtc_result
 
-    # use actual best ask price + tiny buffer
+    # use actual best ask price + tiny buffer, capped at 0.85
     best_ask = float(available_asks[0]['price'])
     total_available = sum(float(a['size']) for a in available_asks)
-    price = round(min(best_ask + 0.01, 0.99), 2)
+    price = round(min(best_ask + 0.01, 0.85), 2)
     print(f'  → Order book: best ask {best_ask} | available shares: {total_available:.0f}')
     side_str = 'UP' if direction == 'up' else 'DOWN'
 
@@ -447,10 +477,16 @@ async def place_trade(market: dict, direction: str,
         filled, shares_filled = fak_filled(result)
         if filled:
             print(f'  [Order] FAK filled {shares_filled} shares')
+            log_execution_event(market, direction, 'fak_filled',
+                                raw_price, price, best_ask,
+                                extra=f'shares={shares_filled}')
             return result
 
         # FAK didn't fill — try GTC fallback
         print(f'  [Order] FAK no-fill — trying GTC fallback')
+        log_execution_event(market, direction, 'fak_no_fill',
+                            raw_price, price, best_ask,
+                            extra=f'result={str(result)[:200]}')
         gtc_result = await place_gtc_fallback(
             client_factory=get_client,
             market=market,
