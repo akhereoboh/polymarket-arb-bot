@@ -8,7 +8,16 @@ from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 import csv
 from pathlib import Path
-
+from telegram_alerts import (
+    alert_entry,
+    schedule_outcome_check,
+    start_daily_summary_loop,
+    send_message,
+)
+from gtc_fallback import (
+    place_gtc_fallback, fak_filled, clear_gtc_tracking,
+    active_gtc_count, set_on_fill_callback,
+)
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 sys.path.insert(0, '/root/my-clob-client')
@@ -28,6 +37,7 @@ CL_CONTRACT   = '0xc907E116054Ad103354f2D350FD2514433D57F6f'
 
 # ── state ────────────────────────────────────────────────
 _traded         = set()   # condition_ids already traded this session
+_signal_context: dict[str, dict] = {}  # condition_id -> {confidence, cl_pct, bn_pct} for fill callbacks
 _btc_history    = []      # [(timestamp, binance_price), ...]
 _cl_history     = []      # [(timestamp, chainlink_price), ...]
 _opening_prices = {}      # condition_id -> chainlink opening price
@@ -542,18 +552,33 @@ async def market_scanner():
                         confidence
                     )
 
-                    # place trade
+                    #place trade
+                    _signal_context[cid] = {
+                        'confidence': confidence,
+                        'cl_pct': cl_pct,
+                        'bn_pct': bn_pct,
+                    }
                     _traded.add(cid)
                     log_signal(market, direction, shares, cl_pct, bn_pct, confidence,
                                cl_price, _opening_prices[cid], _btc_history[-1][1])
                     bal_before = await get_balance()
-                    await place_trade(market, direction, shares, confidence)
+                    trade_result = await place_trade(market, direction, shares, confidence)
                     await asyncio.sleep(2)
                     bal_after = await get_balance()
                     change    = bal_after - bal_before
                     print(f'[Trade] Balance: ${bal_before:.4f} → ${bal_after:.4f} | Change: ${change:+.4f}')
+
                     if change < 0:
                         print(f'[Trade] ✅ Order confirmed on Polymarket — balance decreased')
+                        # Fire Telegram entry alert and schedule outcome poll
+                        entry_price = market['up_price'] if direction == 'up' else market['down_price']
+                        await alert_entry(
+                            market, direction, shares, entry_price,
+                            confidence, cl_pct, bn_pct, get_balance,
+                        )
+                        schedule_outcome_check(
+                            market, direction, shares, entry_price, get_balance,
+                        )
                     else:
                         print(f'[Trade] ⚠️ Balance unchanged — order may not have filled')
 
@@ -562,10 +587,36 @@ async def market_scanner():
             await asyncio.sleep(5)
 
 
+async def _on_gtc_fill(market: dict, fill_info: dict) -> None:
+    """Called by gtc_fallback when a GTC fills. Fires Telegram alert + outcome tracking."""
+    cid = market['condition_id']
+    _traded.add(cid)
+
+    direction = fill_info['direction']
+    shares = fill_info['shares']
+    fill_price = fill_info['price']
+
+    # Pull the signal context stashed at trade time
+    meta = _signal_context.pop(cid, {})
+    confidence = meta.get('confidence', 0)
+    cl_pct = meta.get('cl_pct', 0)
+    bn_pct = meta.get('bn_pct', 0)
+
+    await alert_entry(
+        market, direction, shares, fill_price,
+        confidence, cl_pct, bn_pct, get_balance,
+    )
+    schedule_outcome_check(
+        market, direction, shares, fill_price, get_balance,
+    )
+
+
 async def main():
+    set_on_fill_callback(_on_gtc_fill)
     await asyncio.gather(
         price_monitor(),
         market_scanner(),
+        start_daily_summary_loop(get_balance),
     )
 
 

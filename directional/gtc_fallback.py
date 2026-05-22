@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 # Hard deadline before market close — cancel any unfilled GTC by this time.
 # Below this many seconds before close, the order is too risky to keep open.
 T_MINUS_CANCEL_SEC = 5
+FILL_POLL_INTERVAL_SEC = 2
 
 # Track active GTC orders so we don't double-post on the same market.
 # Maps condition_id -> {order_id, cancel_at_ts, market_title}
@@ -134,9 +135,15 @@ async def place_gtc_fallback(
                 'cancel_at_ts': cancel_at_ts,
                 'market_title': market['title'],
                 'token_id': token_id,
+                'shares': shares,
+                'price': gtc_price,
+                'direction': direction,
+                'market_ref': market,
+                'status': 'open',
             }
-            # Fire and forget — background cancel watcher
+            # Fire and forget — background cancel watcher + fill poller
             asyncio.create_task(_cancel_watcher(client_factory, cid))
+            asyncio.create_task(_fill_poller(client_factory, cid))
 
         return {'status': 'posted', 'order_id': order_id, 'price': gtc_price}
     except Exception as e:
@@ -187,3 +194,100 @@ def clear_gtc_tracking(condition_id: str) -> None:
 
 def active_gtc_count() -> int:
     return len(_active_gtcs)
+
+# Callback set by bot.py at startup so we can fire Telegram alerts on fill.
+# Signature: async def on_fill(market: dict, fill_info: dict) -> None
+_on_fill_callback = None
+
+
+def set_on_fill_callback(callback) -> None:
+    """Register a coroutine to be called when a GTC fills.
+
+    callback(market, fill_info) where fill_info = {
+        'order_id', 'shares', 'price', 'cost', 'filled_at_ts', 'direction'
+    }
+    """
+    global _on_fill_callback
+    _on_fill_callback = callback
+
+
+def _fetch_order_status(client, order_id: str) -> dict | None:
+    """Try common py_clob_client_v2 method names for fetching a single order."""
+    for method_name in ('get_order', 'getOrder', 'order'):
+        if hasattr(client, method_name):
+            try:
+                fn = getattr(client, method_name)
+                result = fn(order_id)
+                if isinstance(result, dict):
+                    return {
+                        'status': (result.get('status') or result.get('state') or '').lower(),
+                        'size_matched': float(
+                            result.get('size_matched')
+                            or result.get('sizeMatched')
+                            or result.get('matched_amount')
+                            or result.get('matchedAmount')
+                            or 0
+                        ),
+                        'raw': result,
+                    }
+            except Exception as e:
+                print(f'  [GTC-poll] {method_name}({order_id}) failed: {e}')
+                continue
+    return None
+
+
+async def _fill_poller(client_factory, condition_id: str) -> None:
+    """Poll CLOB every 2s until the GTC fills (full fill only) or is cancelled."""
+    while True:
+        await asyncio.sleep(FILL_POLL_INTERVAL_SEC)
+
+        info = _active_gtcs.get(condition_id)
+        if not info or info.get('status') != 'open':
+            # Cancelled, removed, or already handled
+            return
+
+        try:
+            client = client_factory()
+            status = _fetch_order_status(client, info['order_id'])
+        except Exception as e:
+            print(f'  [GTC-poll] Error fetching status: {e}')
+            continue
+
+        if status is None:
+            continue
+
+        target_shares = info['shares']
+        size_matched = status.get('size_matched', 0)
+        order_status = status.get('status', '')
+
+        # Detect exchange-side cancellation/expiry
+        if order_status in ('cancelled', 'canceled', 'expired'):
+            print(f'  [GTC-poll] Order {info["order_id"]} terminated by exchange ({order_status})')
+            info['status'] = 'cancelled'
+            return
+
+        # Partial fill — log but keep waiting (per spec: full fill only)
+        if 0 < size_matched < target_shares:
+            print(f'  [GTC-poll] Partial fill: {size_matched}/{target_shares} (waiting for full)')
+            continue
+
+        # Full fill detected
+        if size_matched >= target_shares or order_status in ('matched', 'filled'):
+            info['status'] = 'filled'
+            fill_info = {
+                'order_id': info['order_id'],
+                'shares': target_shares,
+                'price': info['price'],
+                'cost': round(target_shares * info['price'], 4),
+                'filled_at_ts': time.time(),
+                'direction': info['direction'],
+            }
+            print(f'  [GTC-poll] FULL FILL: {target_shares} @ {info["price"]} on {info["market_title"][:40]}')
+
+            if _on_fill_callback:
+                try:
+                    await _on_fill_callback(info['market_ref'], fill_info)
+                except Exception as e:
+                    print(f'  [GTC-poll] on_fill callback error: {e}')
+
+            return
