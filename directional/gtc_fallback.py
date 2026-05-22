@@ -91,18 +91,20 @@ async def place_gtc_fallback(
 
     token_id = market['up_token'] if direction == 'up' else market['down_token']
     asks = sorted(book['asks'], key=lambda x: float(x['price']))
-    if not asks:
-        return {'status': 'no_asks'}
-
-    # GTC sits at the current best ask (no buffer — more passive than FAK)
-    best_ask = float(asks[0]['price'])
-    # Sanity cap: don't pay more than reference + 0.10 even on thin markets
     raw_price = market['up_price'] if direction == 'up' else market['down_price']
-    max_acceptable = round(min(raw_price + 0.10, 0.99), 2)
-    if best_ask > max_acceptable:
-        print(f'  [GTC] Best ask {best_ask} exceeds max acceptable {max_acceptable} (raw={raw_price}) — skipping')
-        return {'status': 'price_too_high', 'best_ask': best_ask, 'max': max_acceptable}
-    gtc_price = round(min(best_ask, 0.99), 2)
+
+    if not asks:
+        # No asks on the book — become the liquidity at fair value (raw_price)
+        gtc_price = round(min(raw_price, 0.99), 2)
+        print(f'  [GTC] Order book has zero asks — becoming liquidity at raw_price {gtc_price}')
+    else:
+        # We have asks on the book — use normal logic with sanity cap
+        best_ask = float(asks[0]['price'])
+        max_acceptable = round(min(raw_price + 0.10, 0.99), 2)
+        if best_ask > max_acceptable:
+            print(f'  [GTC] Best ask {best_ask} exceeds max acceptable {max_acceptable} (raw={raw_price}) — skipping')
+            return {'status': 'price_too_high', 'best_ask': best_ask, 'max': max_acceptable}
+        gtc_price = round(min(best_ask, 0.99), 2)
 
     seconds_left = (market['end_time'] - datetime.now(timezone.utc)).total_seconds()
     cancel_at_ts = time.time() + seconds_left - T_MINUS_CANCEL_SEC
