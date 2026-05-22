@@ -99,16 +99,39 @@ async def place_gtc_fallback(
         gtc_price = round(min(raw_price + 0.05, 0.85), 2)
         print(f'  [GTC] Order book has zero asks — posting at {gtc_price} (raw={raw_price})')
     else:
+        # thresholds
+        T_STAGE1_SEC = 10      # place at our price
+        T_STAGE2_SEC = 6       # override to best ask
+        T_MINUS_CANCEL_SEC = 3.5     # final cancel
         # We have asks on the book — use normal logic with sanity cap
-        best_ask = float(asks[0]['price'])
-        gtc_buffer = 0.20 if early_mode else 0.10
-        max_acceptable = round(min(raw_price + gtc_buffer, 0.85), 2)
-        if best_ask > max_acceptable:
-            print(f'  [GTC] Best ask {best_ask} exceeds max acceptable {max_acceptable} (raw={raw_price}) — skipping')
-            return {'status': 'price_too_high', 'best_ask': best_ask, 'max': max_acceptable}
-        gtc_price = round(min(best_ask, 0.85), 2)
+        seconds_left = (market['end_time'] - datetime.now(timezone.utc)).total_seconds()
 
-    seconds_left = (market['end_time'] - datetime.now(timezone.utc)).total_seconds()
+        if seconds_left <= T_STAGE2_SEC:
+            # Stage 2: override to best ask
+            best_ask_entry = asks[0]
+            best_ask = float(best_ask_entry['price'])
+            available_size = float(best_ask_entry.get('size', 0))
+            if available_size < shares:
+                return {'status': 'insufficient_liquidity'}
+            gtc_price = round(best_ask, 2)
+            print(f'[GTC] Stage 2 override: posting at best ask {gtc_price}')
+        elif seconds_left <= T_STAGE1_SEC:
+            # Stage 1: our own price
+            gtc_price = round(min(raw_price + 0.05, 0.85), 2)
+            print(f'[GTC] Stage 1: posting at {gtc_price} (raw={raw_price})')
+        else:
+            # Normal buffer logic
+            best_ask = float(asks[0]['price'])
+            gtc_buffer = 0.20 if early_mode else 0.10
+            max_acceptable = round(min(raw_price + gtc_buffer, 0.85), 2)
+
+            if best_ask > max_acceptable:
+                print(f'  [GTC] Best ask {best_ask} exceeds max acceptable {max_acceptable} (raw={raw_price}) — skipping')
+                return {'status': 'price_too_high', 'best_ask': best_ask, 'max': max_acceptable}
+
+            gtc_price = round(min(best_ask, 0.85), 2)
+
+
     cancel_at_ts = time.time() + seconds_left - T_MINUS_CANCEL_SEC
 
     if cancel_at_ts <= time.time() + 2:
@@ -185,6 +208,8 @@ async def _cancel_watcher(client_factory, condition_id: str) -> None:
         # py_clob_client_v2 cancel API — try the common method names
         if hasattr(client, 'cancel'):
             res = client.cancel(order_id=order_id)
+            print(f'Cancel result: {res}')
+
         elif hasattr(client, 'cancel_order'):
             res = client.cancel_order(order_id)
         else:
