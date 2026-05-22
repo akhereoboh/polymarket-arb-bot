@@ -113,7 +113,7 @@ def evaluate_realtime(
     timeframe = market.get("timeframe", "")
 
     # only run on 5m markets
-    if timeframe != "5m":
+    if timeframe not in ("5m", "15m"):
         return None
 
     up_price = market.get("yes_price")

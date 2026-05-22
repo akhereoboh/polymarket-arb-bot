@@ -46,7 +46,7 @@ def evaluate_arb(market: dict) -> Optional[ArbSignal]:
         return None
 
     # only run pure arb on 5m markets
-    if timeframe != "5m":
+    if timeframe not in ("5m", "15m"):
         return None
 
     total_cost = round(up_price + down_price, 4)
