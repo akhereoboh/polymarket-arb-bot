@@ -1,0 +1,99 @@
+GTC FALLBACK — INTEGRATION INTO bot.py
+=======================================
+
+Step 1: Place gtc_fallback.py at /root/polymarket-arb-bot/directional/gtc_fallback.py
+
+
+Step 2: Add this import near the top of bot.py, after the existing imports:
+
+    from gtc_fallback import (
+        place_gtc_fallback, fak_filled, clear_gtc_tracking, active_gtc_count
+    )
+
+
+Step 3: Modify place_trade() to call the fallback when FAK doesn't fill.
+
+Replace the existing try/except at the end of place_trade() with this:
+
+    try:
+        client = get_client()
+        result = client.create_and_post_order(
+            order_args=OrderArgs(
+                token_id=token_id,
+                price=price,
+                size=shares,
+                side=Side.BUY,
+            ),
+            options=PartialCreateOrderOptions(tick_size='0.01', neg_risk=False),
+            order_type=OrderType.FAK,
+        )
+        print(f'  [Order] FAK result: {result}')
+
+        filled, shares_filled = fak_filled(result)
+        if filled:
+            print(f'  [Order] FAK filled {shares_filled} shares')
+            return result
+
+        # FAK didn't fill — try GTC fallback
+        print(f'  [Order] FAK no-fill — trying GTC fallback')
+        gtc_result = await place_gtc_fallback(
+            client_factory=get_client,
+            market=market,
+            direction=direction,
+            shares=shares,
+            confidence=confidence,
+            book=book,
+            OrderArgs=OrderArgs,
+            OrderType=OrderType,
+            PartialCreateOrderOptions=PartialCreateOrderOptions,
+            Side=Side,
+        )
+        return gtc_result
+
+    except Exception as e:
+        print(f'  [Order] Error: {e}')
+        return {'status': 'error', 'error': str(e)}
+
+
+Step 4 (optional but recommended): in the scanner loop, after the
+"Balance: $X -> $Y" log line, clear GTC tracking on fills so the
+cancel watcher doesn't fire after we already have the position:
+
+    if change < 0:
+        print(f'[Trade] Order confirmed on Polymarket — balance decreased')
+        clear_gtc_tracking(cid)
+    else:
+        print(f'[Trade] Balance unchanged — order may not have filled')
+
+Step 5 (optional logging): add to scanner status logs:
+
+    if active_gtc_count() > 0:
+        print(f'[GTC] Active fallback orders: {active_gtc_count()}')
+
+
+WHAT THIS GIVES YOU
+===================
+
+- FAK still fires first at best_ask + 0.01 — fastest, no slippage past 1 cent
+- If FAK returns no fill, immediately post a GTC at best_ask (passive, more
+  likely to sit on book until matched)
+- Cancel watcher runs in background — at T-5s before market close, kills the
+  GTC regardless of fill status. If filled in between, clear_gtc_tracking()
+  removes it from the watch list so cancel is skipped.
+- One GTC per market max — _active_gtcs prevents duplicates
+
+
+WHAT TO MONITOR FIRST TIME LIVE
+================================
+
+1. After enabling, watch logs for `[GTC] Posted` lines — confirm orders are
+   actually being created
+2. Check `[GTC] Auto-cancelling` fires before market close
+3. If you see GTCs filling on bad signals (post-FAK price moves against you),
+   consider raising T_MINUS_CANCEL_SEC to 15-20s so you cancel earlier
+4. If FAK fills are consistently happening, GTC fallback won't fire — that's
+   fine, it's there as insurance against thin order books
+
+If anything in fak_filled() misclassifies a fill, the GTC will still be posted
+and you'll end up double-positioned. Worth doing one DRY_RUN session to verify
+result-parsing first.
