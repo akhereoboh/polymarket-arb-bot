@@ -58,10 +58,11 @@ def log_skipped_signal(market: dict, direction: str, confidence: float,
     file_exists = Path(SKIPPED_LOG_FILE).exists()
     with open(SKIPPED_LOG_FILE, 'a', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=[
-            'timestamp', 'market', 'condition_id', 'end_time',
-            'timeframe', 'direction', 'confidence',
-            'cl_pct', 'bn_pct', 'cl_price', 'binance_price',
-            'skipped_price', 'reason', 'outcome', 'would_have_won'
+            'timestamp', 'market', 'end_time', 'timeframe', 'slug', 'condition_id',
+            'direction', 'entry_price', 'shares', 'cost', 'cl_pct', 'bn_pct',
+            'confidence', 'up_price', 'down_price',
+            'cl_price_at_signal', 'opening_cl_price', 'binance_at_signal',
+            'dry_run', 'outcome', 'resolution_cl_price', 'up_won'
         ])
         if not file_exists:
             writer.writeheader()
@@ -81,6 +82,10 @@ def log_skipped_signal(market: dict, direction: str, confidence: float,
             'reason':         reason,
             'outcome':        'PENDING',
             'would_have_won': '',
+            'timeframe':            market.get('timeframe', ''),
+            'slug':                 market.get('slug', ''),
+            'condition_id':         market.get('condition_id', ''),
+            'up_won':               '',
         })
 
 
