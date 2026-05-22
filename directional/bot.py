@@ -335,7 +335,7 @@ async def place_trade(market: dict, direction: str,
 
     # check order book for available liquidity at our price
     book = await get_order_book(token_id)
-    asks = sorted(book['asks'], key=lambda x: float(x['price']))
+    asks = sorted(book['asks'], key=lambda x: float(x['price']))  # ascending ✅
 
     # find best ask at or below our max price (raw + 0.05)
     max_price = round(min(raw_price + 0.05, 0.99), 2)
