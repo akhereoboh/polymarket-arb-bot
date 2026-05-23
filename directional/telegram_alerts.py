@@ -448,7 +448,25 @@ async def _poll_telegram_commands() -> None:
         print('[Telegram] Command listener disabled (no token/chat configured)')
         return
 
-    print('[Telegram] Command listener started')
+    print('[Telegram] Command listener starting — clearing pending updates...')
+
+    # Drain any pending/stale updates on startup so we don't re-process old /stop commands
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(
+                f'{API_BASE}/getUpdates',
+                params={'offset': -1, 'timeout': 0},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as r:
+                data = await r.json()
+            if data.get('ok') and data.get('result'):
+                last_id = data['result'][-1]['update_id']
+                _telegram_update_offset = last_id + 1
+                print(f'[Telegram] Skipped past update_id {last_id} (cleared backlog)')
+        except Exception as e:
+            print(f'[Telegram] Could not clear backlog: {e}')
+
+    print('[Telegram] Command listener active')
     await send_message('Command listener active. Send /help for commands.')
 
     async with aiohttp.ClientSession() as session:
