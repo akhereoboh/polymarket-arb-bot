@@ -691,7 +691,7 @@ async def market_scanner():
 
                     # check price not too one-sided — poor risk/reward at extremes
                     trade_price = market['up_price'] if direction == 'up' else market['down_price']
-                    if trade_price < 0.15 or trade_price > 0.88:
+                    if trade_price < 0.15 or trade_price > 0.85:
                         print(f'  → Market too one-sided ({trade_price}) — poor risk/reward, skipping')
                         log_skipped_signal(market, direction, confidence, cl_pct, bn_pct,
                                            cl_price, _btc_history[-1][1], trade_price,
