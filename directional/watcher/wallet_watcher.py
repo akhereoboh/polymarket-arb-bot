@@ -34,10 +34,9 @@ from dotenv import load_dotenv
 _HERE = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_HERE, '.env'))
 
-# Reuse Telegram from directional bot
-sys.path.insert(0, os.path.join(_HERE, '..', 'directional'))
+# Reuse Telegram from directional bot (one level up)
+sys.path.insert(0, os.path.dirname(_HERE))
 from telegram_alerts import send_message  # noqa: E402
-
 
 # ─── config ─────────────────────────────────────────────────────────────
 
