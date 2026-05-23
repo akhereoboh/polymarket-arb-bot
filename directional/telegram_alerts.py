@@ -29,7 +29,7 @@ BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 API_BASE = f'https://api.telegram.org/bot{BOT_TOKEN}'
 
-GAMMA_MARKETS_URL = 'https://gamma-api.polymarket.com/markets'
+GAMMA_EVENTS_URL = 'https://gamma-api.polymarket.com/events'
 
 # Resolution polling
 FIRST_CHECK_DELAY_SEC = 120
@@ -162,33 +162,34 @@ async def alert_outcome_unknown(market_title: str, timeframe: str, direction: st
 
 # ── outcome resolution (Polymarket-based) ───────────────────────────────
 
-async def _fetch_market_state(session: aiohttp.ClientSession, condition_id: str) -> dict | None:
+async def _fetch_market_state(session: aiohttp.ClientSession, slug: str) -> dict | None:
     """
-    Fetch current market state from gamma API.
+    Fetch current market state from gamma /events endpoint by slug.
 
-    Returns dict with keys: closed (bool), outcome_prices (list[float]) or None on error.
+    Returns dict with closed (bool) and outcome_prices (list[float]), or None on error.
     """
     try:
-        # Gamma API supports filtering markets by condition_ids
         async with session.get(
-            GAMMA_MARKETS_URL,
-            params={'condition_ids': condition_id},
+            GAMMA_EVENTS_URL,
+            params={'slug': slug},
             headers={'User-Agent': 'Mozilla/5.0'},
             timeout=aiohttp.ClientTimeout(total=10),
         ) as r:
             if r.status != 200:
-                print(f'[Telegram] gamma fetch HTTP {r.status} for {condition_id}')
+                print(f'[Telegram] gamma fetch HTTP {r.status} for slug {slug}')
                 return None
             data = await r.json()
 
-        # Response is an array — pick the matching market
         if not data or not isinstance(data, list):
             return None
 
-        market = data[0]
-        closed = bool(market.get('closed'))
+        event = data[0]
+        closed = bool(event.get('closed'))
+        markets = event.get('markets', [])
+        if not markets:
+            return None
 
-        # outcomePrices is a JSON-encoded string like '["1.0", "0.0"]'
+        market = markets[0]
         prices_raw = market.get('outcomePrices', '[]')
         if isinstance(prices_raw, str):
             import json as _json
@@ -203,7 +204,7 @@ async def _fetch_market_state(session: aiohttp.ClientSession, condition_id: str)
 
         return {'closed': closed, 'outcome_prices': outcome_prices}
     except Exception as e:
-        print(f'[Telegram] gamma fetch error for {condition_id}: {e}')
+        print(f'[Telegram] gamma fetch error for slug {slug}: {e}')
         return None
 
 
@@ -216,23 +217,6 @@ def _is_resolved(state: dict) -> bool:
         return False
     # Resolved markets have one price at 1.0 and one at 0.0 (within tolerance)
     return any(abs(p - 1.0) < 0.01 for p in prices) and any(abs(p - 0.0) < 0.01 for p in prices)
-
-
-def schedule_outcome_check(
-    market: dict,
-    direction: str,
-    shares: int,
-    entry_price: float,
-    get_balance_fn,
-) -> None:
-    """
-    Schedule background polling for this market's outcome.
-
-    Should be called immediately after a confirmed trade entry.
-    """
-    asyncio.create_task(
-        _resolve_outcome(market, direction, shares, entry_price, get_balance_fn)
-    )
 
 
 async def _resolve_outcome(
@@ -254,9 +238,14 @@ async def _resolve_outcome(
         await asyncio.sleep(wait_sec)
 
     # Poll for resolution
+    slug = market.get('slug', '')
+    if not slug:
+        await alert_outcome_unknown(title, tf, direction)
+        return
+
     async with aiohttp.ClientSession() as session:
-        for attempt in range(MAX_RETRIES + 1):  # first check + retries
-            state = await _fetch_market_state(session, condition_id)
+        for attempt in range(MAX_RETRIES + 1):
+            state = await _fetch_market_state(session, slug)
             if state and _is_resolved(state):
                 prices = state['outcome_prices']
                 # By convention in the bot: token_ids[0] = UP, token_ids[1] = DOWN
@@ -301,6 +290,24 @@ async def _resolve_outcome(
 
     # Exhausted retries — send unknown alert
     await alert_outcome_unknown(title, tf, direction)
+
+
+def schedule_outcome_check(
+    market: dict,
+    direction: str,
+    shares: int,
+    entry_price: float,
+    get_balance_fn,
+) -> None:
+    """
+    Schedule background polling for this market's outcome.
+
+    Should be called immediately after a confirmed trade entry.
+    """
+    asyncio.create_task(
+        _resolve_outcome(market, direction, shares, entry_price, get_balance_fn)
+    )
+
 
 
 # ── daily PnL summary ───────────────────────────────────────────────────
@@ -367,3 +374,125 @@ async def _send_daily_summary(get_balance_fn) -> None:
         f'Account balance: ${balance:.2f}'
     )
     await send_message(text)
+
+
+# ── Telegram command listener for /stop and /start ─────────────────────
+
+import subprocess
+
+# Telegram getUpdates offset — tracks which messages we've already seen
+_telegram_update_offset = 0
+
+# Service name for systemctl
+SERVICE_NAME = 'polybot-directional'
+
+# Only accept commands from the configured chat
+ALLOWED_CHAT_ID = CHAT_ID  # already loaded from env
+
+
+async def _handle_command(text: str) -> str:
+    """Handle a /command. Returns reply text."""
+    cmd = text.strip().lower()
+
+    if cmd == '/stop':
+        # Spawn a detached systemctl command so it survives this process being killed
+        try:
+            subprocess.Popen(
+                ['systemctl', 'stop', SERVICE_NAME],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            return f'STOP command received. Stopping {SERVICE_NAME}...'
+        except Exception as e:
+            return f'STOP failed: {e}'
+
+    elif cmd == '/start':
+        try:
+            subprocess.Popen(
+                ['systemctl', 'start', SERVICE_NAME],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            return f'START command received. Starting {SERVICE_NAME}...'
+        except Exception as e:
+            return f'START failed: {e}'
+
+    elif cmd == '/status':
+        try:
+            result = subprocess.run(
+                ['systemctl', 'is-active', SERVICE_NAME],
+                capture_output=True, text=True, timeout=5,
+            )
+            status = result.stdout.strip()
+            return f'Service status: {status}'
+        except Exception as e:
+            return f'Status failed: {e}'
+
+    elif cmd == '/help':
+        return ('Commands:\n'
+                '/stop — stop the bot\n'
+                '/start — start the bot\n'
+                '/status — check service status\n'
+                '/help — this message')
+
+    return ''  # ignore non-command text
+
+
+async def _poll_telegram_commands() -> None:
+    """Background task: long-poll Telegram getUpdates and dispatch commands."""
+    global _telegram_update_offset
+
+    if not BOT_TOKEN or not CHAT_ID:
+        print('[Telegram] Command listener disabled (no token/chat configured)')
+        return
+
+    print('[Telegram] Command listener started')
+    await send_message('Command listener active. Send /help for commands.')
+
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                async with session.get(
+                    f'{API_BASE}/getUpdates',
+                    params={
+                        'offset': _telegram_update_offset,
+                        'timeout': 30,  # long-poll
+                        'allowed_updates': '["message"]',
+                    },
+                    timeout=aiohttp.ClientTimeout(total=40),
+                ) as r:
+                    data = await r.json()
+            except asyncio.TimeoutError:
+                continue  # normal long-poll timeout
+            except Exception as e:
+                print(f'[Telegram] getUpdates error: {e}')
+                await asyncio.sleep(5)
+                continue
+
+            if not data.get('ok'):
+                await asyncio.sleep(5)
+                continue
+
+            updates = data.get('result', [])
+            for u in updates:
+                _telegram_update_offset = u['update_id'] + 1
+                msg = u.get('message') or {}
+                chat = msg.get('chat', {})
+                text = msg.get('text', '')
+
+                # Restrict to our chat only
+                if str(chat.get('id')) != str(ALLOWED_CHAT_ID):
+                    continue
+                if not text.startswith('/'):
+                    continue
+
+                reply = await _handle_command(text)
+                if reply:
+                    await send_message(reply)
+
+
+async def start_command_listener() -> None:
+    """Public entry point. Call from bot.py main()."""
+    asyncio.create_task(_poll_telegram_commands())

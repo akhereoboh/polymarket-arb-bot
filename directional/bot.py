@@ -17,6 +17,7 @@ from telegram_alerts import (
     schedule_outcome_check,
     start_daily_summary_loop,
     send_message,
+    start_command_listener,
 )
 from gtc_fallback import (
     place_gtc_fallback, fak_filled, clear_gtc_tracking,
@@ -767,6 +768,7 @@ async def _on_gtc_fill(market: dict, fill_info: dict) -> None:
 
 async def main():
     set_on_fill_callback(_on_gtc_fill)
+    await start_command_listener()
     await asyncio.gather(
         price_monitor(),
         market_scanner(),
