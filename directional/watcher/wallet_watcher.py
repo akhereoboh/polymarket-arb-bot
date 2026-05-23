@@ -46,7 +46,7 @@ GAMMA_EVENTS = 'https://gamma-api.polymarket.com/events'
 # Wallets to watch — proxy addresses (from Polymarket profile URL after @)
 # Each entry: (label, proxy_wallet_address)
 TRACKED_WALLETS: list[tuple[str, str]] = [
-    ('0xbadb9af', '0xbadb9af986ee66437bd39e6cd3d3036cbbdc31a7'),
+    ('chiiwawinha', '0xbadb9af986ee66437bd39e6cd3d3036cbbdc31a7'),
     # Add more like: ('whale1', '0x...'),
 ]
 
