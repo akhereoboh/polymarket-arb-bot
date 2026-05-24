@@ -461,6 +461,11 @@ async def _handle_new_trade(
         'copy_trade_result': None,
     }
 
+
+    # 🔎 Add this line here
+    _log(f'Attempting Supabase insert: {row}')
+
+
     success, is_new = await _supabase_insert(session, row)
     if not is_new:
         # Already saw this trade in a previous poll (dedup at DB level)
