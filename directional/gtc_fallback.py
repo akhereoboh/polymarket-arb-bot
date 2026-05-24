@@ -27,6 +27,8 @@ FILL_POLL_INTERVAL_SEC = 2
 _active_gtcs: dict[str, dict] = {}
 
 
+
+
 def fak_filled(result: dict) -> tuple[bool, int]:
     """
     Inspect a FAK result and return (was_filled, shares_filled).
@@ -70,14 +72,15 @@ def fak_filled(result: dict) -> tuple[bool, int]:
 
 
 async def place_gtc_fallback(
-    client_factory,         # callable returning a fresh ClobClient
+    client_factory,
     market: dict,
     direction: str,
     shares: int,
     confidence: float,
-    book: dict,             # the order book we already fetched in place_trade
+    book: dict,
     OrderArgs, OrderType, PartialCreateOrderOptions, Side,
     early_mode: bool = False,
+    log_callback=None,
 ) -> dict:
     """
     Post a GTC order at a less aggressive price than the FAK attempt.

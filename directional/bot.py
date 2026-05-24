@@ -66,27 +66,35 @@ EXECUTION_LOG_FILE = os.path.join(os.path.dirname(__file__), 'execution_log.csv'
 
 
 def log_execution_event(market: dict, direction: str, reason: str,
-                        raw_price: float, attempted_price: float = None,
-                        best_ask: float = None, extra: str = ''):
-    """Log every signal-to-trade transition (skip, fire, fill, cancel) for diagnosis."""
+                        raw_price: float | None = None,
+                        attempted_price: float | None = None,
+                        best_ask: float | None = None,
+                        ask_count: int | None = None,
+                        asks_below_cap: int | None = None,
+                        extra: str = ''):
+    """Log a single execution decision so we can diagnose where signals die."""
+    from pathlib import Path
     file_exists = Path(EXECUTION_LOG_FILE).exists()
     with open(EXECUTION_LOG_FILE, 'a', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=[
-            'timestamp', 'market', 'condition_id', 'timeframe', 'direction',
-            'reason', 'raw_price', 'attempted_price', 'best_ask', 'extra'
+            'timestamp', 'market', 'condition_id', 'timeframe',
+            'direction', 'reason', 'raw_price', 'attempted_price',
+            'best_ask', 'ask_count', 'asks_below_cap', 'extra',
         ])
         if not file_exists:
             writer.writeheader()
         writer.writerow({
             'timestamp':       datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
-            'market':          market['title'],
-            'condition_id':    market['condition_id'],
+            'market':          market.get('title', '')[:200],
+            'condition_id':    market.get('condition_id', ''),
             'timeframe':       market.get('timeframe', ''),
-            'direction':       direction.upper() if direction else '',
+            'direction':       (direction or '').upper(),
             'reason':          reason,
-            'raw_price':       round(raw_price, 4) if raw_price else '',
-            'attempted_price': round(attempted_price, 4) if attempted_price else '',
-            'best_ask':        round(best_ask, 4) if best_ask else '',
+            'raw_price':       f'{raw_price:.4f}' if raw_price is not None else '',
+            'attempted_price': f'{attempted_price:.4f}' if attempted_price is not None else '',
+            'best_ask':        f'{best_ask:.4f}' if best_ask is not None else '',
+            'ask_count':       ask_count if ask_count is not None else '',
+            'asks_below_cap':  asks_below_cap if asks_below_cap is not None else '',
             'extra':           extra,
         })
 
@@ -444,13 +452,21 @@ async def place_trade(market: dict, direction: str,
     max_price = round(min(raw_price + fak_buffer, HARD_FILL_CAP), 2)
     available_asks = [a for a in asks if float(a['price']) <= max_price]
 
+    ask_count = len(asks)
+    asks_below_cap_count = len(available_asks)
+
     if not available_asks:
         print(f'  → No sellers at or below {max_price} — routing to GTC fallback')
         all_asks_top = float(asks[0]['price']) if asks else None
         log_execution_event(market, direction, 'fak_no_liquidity',
-                            raw_price, max_price, all_asks_top,
-                            extra=f'total_asks={len(asks)}')
+                            raw_price=raw_price,
+                            attempted_price=max_price,
+                            best_ask=all_asks_top,
+                            ask_count=ask_count,
+                            asks_below_cap=asks_below_cap_count,
+                            extra=f'asks_count={ask_count}')
         gtc_result = await place_gtc_fallback(
+            
                 client_factory=get_client,
                 market=market,
                 direction=direction,
@@ -461,7 +477,7 @@ async def place_trade(market: dict, direction: str,
                 OrderType=OrderType,
                 PartialCreateOrderOptions=PartialCreateOrderOptions,
                 Side=Side,
-            )
+        )
         return gtc_result
 
     # use actual best ask price + tiny buffer, capped at HARD_FILL_CAP
@@ -496,19 +512,34 @@ async def place_trade(market: dict, direction: str,
         )
         print(f'  [Order] FAK result: {result}')
 
+        # Submit the FAK
+        
+    except Exception as e:
+        log_execution_event(market, direction, 'fak_error',
+                            raw_price=raw_price,
+                            attempted_price=price,
+                            best_ask=best_ask,
+                            extra=f'exception={str(e)[:200]}')
+        raise  # propagate the exception so we don't proceed silently
+
         filled, shares_filled = fak_filled(result)
         if filled:
             print(f'  [Order] FAK filled {shares_filled} shares')
             log_execution_event(market, direction, 'fak_filled',
-                                raw_price, price, best_ask,
+                                raw_price=raw_price,
+                                attempted_price=price,
+                                best_ask=best_ask,
                                 extra=f'shares={shares_filled}')
             return result
 
-        # FAK didn't fill — try GTC fallback
+        # FAK didn't fill — log it, then try GTC fallback
         print(f'  [Order] FAK no-fill — trying GTC fallback')
         log_execution_event(market, direction, 'fak_no_fill',
-                            raw_price, price, best_ask,
+                            raw_price=raw_price,
+                            attempted_price=price,
+                            best_ask=best_ask,
                             extra=f'result={str(result)[:200]}')
+
         gtc_result = await place_gtc_fallback(
             client_factory=get_client,
             market=market,
@@ -521,6 +552,7 @@ async def place_trade(market: dict, direction: str,
             PartialCreateOrderOptions=PartialCreateOrderOptions,
             Side=Side,
             early_mode=early_mode,
+            log_callback=log_execution_event,
         )
         return gtc_result
 
@@ -694,6 +726,9 @@ async def market_scanner():
                     trade_price = market['up_price'] if direction == 'up' else market['down_price']
                     if trade_price < 0.15 or trade_price > 0.80:
                         print(f'  → Market too one-sided ({trade_price}) — poor risk/reward, skipping')
+                        log_execution_event(market, direction, 'cap_blocked',
+                            raw_price=trade_price,
+                            extra=f'one_sided_price={trade_price}')
                         log_skipped_signal(market, direction, confidence, cl_pct, bn_pct,
                                            cl_price, _btc_history[-1][1], trade_price,
                                            reason='one_sided')
