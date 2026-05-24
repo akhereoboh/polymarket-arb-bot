@@ -424,6 +424,12 @@ async def _poll_wallet(session: aiohttp.ClientSession, label: str, addr: str):
         if hash((addr, last_seen)) % 5 == 0:
             _log(f'Poll {label}: 0 new (latest in api: {newest_dt}, baseline: {last_seen})')
         return
+    # Update baseline so we don’t re-alert on the same trade
+    _last_poll_per_wallet[addr] = max(int(t['timestamp']) for t in new_trades)
+
+    # 🔔 Fire alerts for each new trade
+    for trade in reversed(new_trades):  # oldest first
+        await _handle_new_trade(session, label, addr, trade)
 
 
 async def _handle_new_trade(
