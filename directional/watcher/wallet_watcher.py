@@ -384,11 +384,18 @@ async def watch_loop():
                 _log(f'Seeded {label}: no recent trades, baseline = now')
 
         # Polling loop
+        poll_count = 0
         while True:
             try:
                 await _poll_all_wallets(session)
+                poll_count += 1
+                # Heartbeat every 30 polls (~10 min at 20s interval)
+                if poll_count % 30 == 0:
+                    _log(f'Heartbeat: {poll_count} polls completed, watching {len(TRACKED_WALLETS)} wallet(s)')
             except Exception as e:
                 _log(f'Poll cycle error: {e}')
+                import traceback
+                traceback.print_exc()
             await asyncio.sleep(POLL_INTERVAL_SEC)
 
 
@@ -409,16 +416,14 @@ async def _poll_wallet(session: aiohttp.ClientSession, label: str, addr: str):
     # Filter to genuinely new trades (newer than what we've seen)
     new_trades = [t for t in trades if int(t['timestamp']) > last_seen]
     if not new_trades:
+        # Useful debug — confirms we ARE polling but found nothing new
+        newest = max(int(t['timestamp']) for t in trades)
+        from datetime import datetime as _dt
+        newest_dt = _dt.fromtimestamp(newest, tz=timezone.utc).strftime('%H:%M:%S')
+        # Only log occasionally to avoid flooding (every 5th call ~ every 100s)
+        if hash((addr, last_seen)) % 5 == 0:
+            _log(f'Poll {label}: 0 new (latest in api: {newest_dt}, baseline: {last_seen})')
         return
-
-    # Process oldest-first so alerts arrive in trade order
-    new_trades.sort(key=lambda t: int(t['timestamp']))
-
-    for trade in new_trades:
-        await _handle_new_trade(session, label, addr, trade)
-
-    # Update last-seen to the most recent trade timestamp
-    _last_poll_per_wallet[addr] = max(int(t['timestamp']) for t in new_trades)
 
 
 async def _handle_new_trade(
