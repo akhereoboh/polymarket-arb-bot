@@ -462,8 +462,7 @@ async def _handle_new_trade(
     }
 
 
-    # 🔎 Add this line here
-    _log(f'Attempting Supabase insert: {row}')
+    
 
 
     success, is_new = await _supabase_insert(session, row)
