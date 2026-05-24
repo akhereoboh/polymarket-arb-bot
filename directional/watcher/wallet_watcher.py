@@ -48,6 +48,8 @@ GAMMA_EVENTS = 'https://gamma-api.polymarket.com/events'
 TRACKED_WALLETS: list[tuple[str, str]] = [
     ('chiiwawinha', '0x1bcb16ab3595079a8a8f0d35a475a3b71bc0b05a'),
     ('badb9af', '0xbadb9af986ee66437bd39e6cd3d3036cbbdc31a7'),
+    ("Weatherstappen", "0xb9012e0d9b60d3920286309328b935cdfa609fc4"),
+    ("0X3572", "0x886602e27ed4f86b2b6644fdef09074ed4ee7fc8")
 ]
 
 # Subset of TRACKED_WALLETS we copy-trade from (when COPY_TRADE_ENABLED=true)
@@ -55,6 +57,8 @@ TRACKED_WALLETS: list[tuple[str, str]] = [
 COPY_FROM_WALLETS: list[str] = [
     '0xbadb9af',
     "chiiwawinha",
+    "Weatherstappen",
+    "0X3572"
 ]
 
 # Polling
