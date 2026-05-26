@@ -518,6 +518,8 @@ async def _handle_new_trade(
 
 async def main():
     try:
+        from watcher_commands import start_watcher_command_listener
+        await start_watcher_command_listener()
         await watch_loop()
     except KeyboardInterrupt:
         _log('Watcher stopped by keyboard interrupt')
