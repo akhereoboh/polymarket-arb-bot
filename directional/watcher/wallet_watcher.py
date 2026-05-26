@@ -57,8 +57,8 @@ TRACKED_WALLETS: list[tuple[str, str]] = [
 COPY_FROM_WALLETS: list[str] = [
     '0xbadb9af',
     "chiiwawinha",
-    "Weatherstappen",
-    "0X3572"
+    # "Weatherstappen",
+    # "0X3572"
 ]
 
 # Polling
