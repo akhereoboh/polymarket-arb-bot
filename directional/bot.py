@@ -466,7 +466,6 @@ async def place_trade(market: dict, direction: str,
                             asks_below_cap=asks_below_cap_count,
                             extra=f'asks_count={ask_count}')
         gtc_result = await place_gtc_fallback(
-            
                 client_factory=get_client,
                 market=market,
                 direction=direction,
