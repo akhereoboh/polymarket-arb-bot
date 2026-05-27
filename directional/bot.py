@@ -49,7 +49,7 @@ EARLY_MIN_MOMENTUM     = 5
 EARLY_MIN_CL_MOVE_PCT  = 0.07
 EARLY_FAK_BUFFER       = 0.15
 EARLY_GTC_BUFFER       = 0.20
-HARD_FILL_CAP          = 0.90
+HARD_FILL_CAP          = 0.995
 
 # ── state ────────────────────────────────────────────────
 _traded         = set()   # condition_ids already traded this session
@@ -447,7 +447,7 @@ async def place_trade(market: dict, direction: str,
     book = await get_order_book(token_id)
     asks = sorted(book['asks'], key=lambda x: float(x['price']))  # ascending ✅
 
-    # FAK ceiling: looser in early-entry mode, capped at 0.90 hard limit
+    # FAK ceiling: looser in early-entry mode, capped at 0.995 hard limit
     fak_buffer = EARLY_FAK_BUFFER if early_mode else 0.05
     max_price = round(min(raw_price + fak_buffer, HARD_FILL_CAP), 2)
     available_asks = [a for a in asks if float(a['price']) <= max_price]
@@ -723,7 +723,7 @@ async def market_scanner():
 
                     # check price not too one-sided — poor risk/reward at extremes
                     trade_price = market['up_price'] if direction == 'up' else market['down_price']
-                    if trade_price < 0.15 or trade_price > 0.90:
+                    if trade_price < 0.15 or trade_price > 0.995:
                         print(f'  → Market too one-sided ({trade_price}) — poor risk/reward, skipping')
                         log_execution_event(market, direction, 'cap_blocked',
                             raw_price=trade_price,
