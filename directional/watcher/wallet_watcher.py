@@ -342,7 +342,7 @@ async def _execute_copy_trade(trade: dict) -> dict:
             order_args,
             options=PartialCreateOrderOptions(neg_risk=False),
         )
-        result = client.post_order(signed, orderType=OrderType.FAK)
+        result = client.post_order(signed, order_type=OrderType.FAK)
         return {
             'status': 'fired',
             'our_price': our_price,
