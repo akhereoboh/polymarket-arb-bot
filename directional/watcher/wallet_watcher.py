@@ -213,11 +213,11 @@ def _format_alert(label: str, trade: dict, is_copy_eligible: bool) -> str:
     eligibility = '\n💎 Copy-eligible' if is_copy_eligible else ''
 
     return (
-        f'{emoji} *{label} traded*\n'
+        f'{emoji} {label} traded\n'
         f'{side} {outcome} @ ${price:.3f}\n'
         f'Size: {size:.0f} shares (${cost:.2f})\n'
         f'Market: {title}\n'
-        f'[View](https://polymarket.com/event/{slug})'
+        f'https://polymarket.com/event/{slug}'
         f'{eligibility}'
     )
 
