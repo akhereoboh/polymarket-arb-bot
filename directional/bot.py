@@ -35,7 +35,7 @@ from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
 
 # ── config ──────────────────────────────────────────────
 DRY_RUN       = os.getenv('DRY_RUN', 'true').lower() == 'true'
-MIN_MOVE_PCT  = float(os.getenv('MIN_MOVE_PCT', '0.05'))  # minimum % move to trade
+MIN_MOVE_PCT  = float(os.getenv('MIN_MOVE_PCT', '0.025'))  # minimum % move to trade
 TRADE_AMOUNT  = float(os.getenv('TRADE_AMOUNT', '4'))    # USD per trade
 RPC           = 'https://polygon-bor-rpc.publicnode.com'
 CL_CONTRACT   = '0xc907E116054Ad103354f2D350FD2514433D57F6f'
