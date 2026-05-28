@@ -26,6 +26,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from dotenv import load_dotenv
 
 _HERE = os.path.dirname(os.path.abspath(__file__))   # define FIRST
 load_dotenv(os.path.join(_HERE, '.env'))
