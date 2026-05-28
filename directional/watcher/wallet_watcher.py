@@ -26,8 +26,14 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+_HERE = os.path.dirname(os.path.abspath(__file__))   # define FIRST
+load_dotenv(os.path.join(_HERE, '.env'))
+
+sys.path.insert(0, _HERE)                      # watcher/ — for positions_watcher
+sys.path.insert(0, os.path.dirname(_HERE))     # directional/ — for telegram_alerts
 from telegram_alerts import send_message  # noqa: E402
-import positions_watcher as pw  # NEW
+import positions_watcher as pw  # noqa: E402
 
 import aiohttp
 from dotenv import load_dotenv
