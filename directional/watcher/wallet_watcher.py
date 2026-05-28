@@ -26,6 +26,8 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from telegram_alerts import send_message  # noqa: E402
+import positions_watcher as pw  # NEW
 
 import aiohttp
 from dotenv import load_dotenv
@@ -388,6 +390,12 @@ async def watch_loop():
                 _last_poll_per_wallet[addr] = startup_ts
                 _log(f'Seeded {label}: no recent trades, baseline = now')
 
+            # Seed positions snapshot too (no alerts on startup)
+            positions = await pw.fetch_positions(session, addr)
+            pw.seed_positions(addr, positions)
+            _log(f'Seeded {label} positions: {len(positions)} open')
+
+
         # Polling loop
         poll_count = 0
         while True:
@@ -412,29 +420,124 @@ async def _poll_all_wallets(session: aiohttp.ClientSession):
             _log(f'Error polling {label}: {e}')
 
 
+async def _poll_wallet_positions(session: aiohttp.ClientSession, label: str, addr: str):
+    """Diff current positions against last snapshot; alert on changes."""
+    positions = await pw.fetch_positions(session, addr)
+    if not positions:
+        return
+
+    events = pw.diff_positions(addr, positions)
+    for event in events:
+        pos = event['position']
+        asset = str(pos.get('asset', ''))
+
+        # Dedup: if the trades path already alerted on this asset recently, skip
+        if pw._was_recently_alerted(addr, asset):
+            continue
+
+        kind = event['kind']
+        _log(f'POSITION {kind.upper()}: {label} {pos.get("outcome","")} '
+             f'{event["old_size"]:.0f}->{event["new_size"]:.0f} '
+             f'"{pos.get("title","")[:40]}"')
+
+        # Telegram alert for every change
+        msg = pw.format_position_event(label, event)
+        await send_message(msg)
+        pw.mark_alerted(addr, asset)
+
+        # Persist to Supabase (reuse the trades schema loosely)
+        await _persist_position_event(session, label, addr, event)
+
+        # Copy-trade ONLY on truly NEW positions (per config decision)
+        if kind == 'new':
+            await _maybe_copy_from_position(session, label, addr, pos)
+
+
 async def _poll_wallet(session: aiohttp.ClientSession, label: str, addr: str):
+    # ── Trades-based detection (richer data when available) ──────────────
     last_seen = _last_poll_per_wallet.get(addr, 0)
     trades = await fetch_recent_trades(session, addr, limit=TRADES_PER_FETCH)
-    if not trades:
+    if trades:
+        new_trades = [t for t in trades if int(t['timestamp']) > last_seen]
+        if new_trades:
+            _last_poll_per_wallet[addr] = max(int(t['timestamp']) for t in new_trades)
+            for trade in reversed(new_trades):  # oldest first
+                await _handle_new_trade(session, label, addr, trade)
+        else:
+            newest = max(int(t['timestamp']) for t in trades)
+            from datetime import datetime as _dt
+            newest_dt = _dt.fromtimestamp(newest, tz=timezone.utc).strftime('%H:%M:%S')
+            if hash((addr, last_seen)) % 5 == 0:
+                _log(f'Poll {label}: 0 new trades (latest in api: {newest_dt})')
+
+    # ── Positions-based detection (catches what /trades misses) ──────────
+    await _poll_wallet_positions(session, label, addr)
+
+async def _persist_position_event(session, label, addr, event):
+    """Log a position-change event to Supabase tracked_trades table."""
+    pos = event['position']
+    asset = str(pos.get('asset', ''))
+    # Synthesize a stable id so re-alerts dedup at DB level
+    pseudo_id = f"pos-{addr.lower()}-{asset}-{event['kind']}-{int(event['new_size'])}"
+    row = {
+        'trade_id': pseudo_id,
+        'wallet': addr.lower(),
+        'wallet_label': label,
+        'market_title': (pos.get('title') or '')[:500],
+        'slug': pos.get('slug', ''),
+        'condition_id': pos.get('conditionId', ''),
+        'outcome': pos.get('outcome', ''),
+        'side': 'BUY' if event['kind'] in ('new', 'increase') else 'SELL',
+        'size': float(event['new_size']),
+        'price': float(pos.get('avgPrice', 0) or 0),
+        'cost': float(event['new_size']) * float(pos.get('avgPrice', 0) or 0),
+        'transaction_hash': '',
+        'trade_timestamp': datetime.now(timezone.utc).isoformat(),
+        'copy_traded': False,
+        'copy_trade_result': None,
+    }
+    await _supabase_insert(session, row)
+
+
+async def _maybe_copy_from_position(session, label, addr, pos):
+    """
+    Copy-trade off a newly detected position. Reuses the same eligibility
+    rules as the trades path, adapting the position dict into a trade-like dict.
+    """
+    # Build a trade-like dict for the existing eligibility checks
+    trade_like = {
+        'side': 'BUY',
+        'outcome': pos.get('outcome', ''),
+        'size': float(pos.get('size', 0) or 0),
+        'price': float(pos.get('avgPrice', 0) or 0),
+        'title': pos.get('title', ''),
+        'slug': pos.get('slug', ''),
+        'asset': pos.get('asset', ''),
+        'conditionId': pos.get('conditionId', ''),
+    }
+
+    eligible_basic, reason = _check_copy_eligibility_basic(label, trade_like)
+    if not eligible_basic:
+        _log(f'  [Copy/pos] {label} not eligible: {reason}')
         return
 
-    # Filter to genuinely new trades (newer than what we've seen)
-    new_trades = [t for t in trades if int(t['timestamp']) > last_seen]
-    if not new_trades:
-        # Useful debug — confirms we ARE polling but found nothing new
-        newest = max(int(t['timestamp']) for t in trades)
-        from datetime import datetime as _dt
-        newest_dt = _dt.fromtimestamp(newest, tz=timezone.utc).strftime('%H:%M:%S')
-        # Only log occasionally to avoid flooding (every 5th call ~ every 100s)
-        if hash((addr, last_seen)) % 5 == 0:
-            _log(f'Poll {label}: 0 new (latest in api: {newest_dt}, baseline: {last_seen})')
+    eligible_full, full_reason = await _check_copy_eligibility_resolution(session, trade_like)
+    if not eligible_full:
+        _log(f'  [Copy/pos] {label} resolution check failed: {full_reason}')
         return
-    # Update baseline so we don’t re-alert on the same trade
-    _last_poll_per_wallet[addr] = max(int(t['timestamp']) for t in new_trades)
 
-    # 🔔 Fire alerts for each new trade
-    for trade in reversed(new_trades):  # oldest first
-        await _handle_new_trade(session, label, addr, trade)
+    _log(f'COPY (from position): firing for {label}...')
+    result = await _execute_copy_trade(trade_like)
+    if result.get('status') == 'fired':
+        await send_message(
+            f'✅ Copy-traded {label} (position-detected)\n'
+            f'Our entry: ${result["our_price"]:.3f} × {result["shares"]} shares\n'
+            f'Source avg: ${result["source_price"]:.3f}'
+        )
+    else:
+        await send_message(
+            f'❌ Copy-trade failed for {label}: {result.get("reason", "unknown")}'
+        )
 
 
 async def _handle_new_trade(
@@ -489,8 +592,12 @@ async def _handle_new_trade(
         eligible_full, full_reason = await _check_copy_eligibility_resolution(session, trade)
 
     # Send Telegram alert (always, regardless of copy outcome)
+    # msg = _format_alert(label, trade, eligible_full)
+    # await send_message(msg)
+
     msg = _format_alert(label, trade, eligible_full)
     await send_message(msg)
+    pw.mark_alerted(addr, trade.get('asset', ''))  # NEW — dedup vs positions path
 
     # If fully eligible, fire copy trade
     if eligible_full:
