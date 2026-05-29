@@ -140,15 +140,20 @@ def log_skipped_signal(market: dict, direction: str, confidence: float,
 def log_signal(market: dict, direction: str, shares: int,
                cl_pct: float, bn_pct: float, confidence: float,
                cl_price: float, opening_price: float, binance_price: float):
+    """Write a PENDING signal row to signals_log.csv with all 27 columns."""
     file_exists = Path(LOG_FILE).exists()
+    fieldnames = [
+        'timestamp', 'market', 'end_time', 'direction',
+        'entry_price', 'shares', 'cost', 'cl_pct', 'bn_pct',
+        'confidence', 'up_price', 'down_price',
+        'cl_price_at_signal', 'opening_cl_price', 'binance_at_signal',
+        'dry_run', 'outcome', 'resolution_cl_price',
+        # Extended outcome columns — populated later by update_signal_outcome()
+        'timeframe', 'slug', 'condition_id', 'up_won',
+        'filled', 'fill_price', 'fill_size', 'fill_pnl', 'fill_tx',
+    ]
     with open(LOG_FILE, 'a', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=[
-            'timestamp', 'market', 'end_time', 'direction',
-            'entry_price', 'shares', 'cost', 'cl_pct', 'bn_pct',
-            'confidence', 'up_price', 'down_price',
-            'cl_price_at_signal', 'opening_cl_price', 'binance_at_signal',
-            'dry_run', 'outcome', 'resolution_cl_price'
-        ])
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         if not file_exists:
             writer.writeheader()
 
@@ -171,9 +176,121 @@ def log_signal(market: dict, direction: str, shares: int,
             'binance_at_signal':    round(binance_price, 2),
             'dry_run':              DRY_RUN,
             'outcome':              'PENDING',
-            'resolution_cl_price':  ''
+            'resolution_cl_price':  '',
+            # NEW columns — set defaults; fill in later
+            'timeframe':            market.get('timeframe', ''),
+            'slug':                 market.get('slug', ''),
+            'condition_id':         market.get('condition_id', ''),
+            'up_won':               '',
+            'filled':               '',
+            'fill_price':           '',
+            'fill_size':            '',
+            'fill_pnl':             '',
+            'fill_tx':              '',
         })
     print(f'[Log] Signal logged to {LOG_FILE}')
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# PATCH 2: ADD this new function to bot.py
+# (place it right below log_signal, around line 180)
+# ═══════════════════════════════════════════════════════════════════════
+
+def update_signal_outcome(
+    condition_id: str,
+    won: bool,
+    pnl: float,
+    up_won: bool,
+    final_up_price: float,
+    fill_price: float | None = None,
+    fill_size: int | None = None,
+    fill_tx: str | None = None,
+):
+    """
+    Update an existing signal row in signals_log.csv with resolution data.
+
+    Looks up the most recent row with matching condition_id and updates the
+    outcome columns. Safe to call multiple times — only updates rows that
+    are still PENDING.
+    """
+    if not Path(LOG_FILE).exists():
+        return
+
+    # Read all rows
+    with open(LOG_FILE, 'r', newline='') as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+
+    # Find the matching PENDING row, latest first
+    updated = False
+    for row in reversed(rows):
+        if row.get('condition_id') == condition_id and row.get('outcome') == 'PENDING':
+            row['outcome'] = 'WIN' if won else 'LOSS'
+            row['up_won'] = 'True' if up_won else 'False'
+            row['fill_pnl'] = round(pnl, 4)
+            row['resolution_cl_price'] = ''  # filled by future enhancement if needed
+            if fill_price is not None:
+                row['fill_price'] = fill_price
+                row['filled'] = 'True'
+            if fill_size is not None:
+                row['fill_size'] = fill_size
+            if fill_tx is not None:
+                row['fill_tx'] = fill_tx
+            updated = True
+            break
+
+    if not updated:
+        # No matching pending row — possibly a trade that didn't get logged
+        # (rare). Log a warning but don't crash.
+        print(f'[Log] update_signal_outcome: no PENDING row found for cid={condition_id[:10]}')
+        return
+
+    # Write back the full CSV (atomic via temp file would be safer; basic here)
+    with open(LOG_FILE, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f'[Log] Updated signal outcome for cid={condition_id[:10]} → '
+          f'{"WIN" if won else "LOSS"} ${pnl:+.2f}')
+
+
+def update_signal_fill(
+    condition_id: str,
+    fill_price: float,
+    fill_size: int,
+    fill_tx: str = '',
+):
+    """
+    Update an existing signal row to mark it as filled (called after FAK/GTC fills).
+    Separate from outcome update because filling happens BEFORE resolution.
+    """
+    if not Path(LOG_FILE).exists():
+        return
+
+    with open(LOG_FILE, 'r', newline='') as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+
+    updated = False
+    for row in reversed(rows):
+        if row.get('condition_id') == condition_id and not row.get('filled'):
+            row['filled'] = 'True'
+            row['fill_price'] = round(float(fill_price), 4)
+            row['fill_size'] = int(fill_size)
+            row['fill_tx'] = fill_tx
+            updated = True
+            break
+
+    if not updated:
+        return
+
+    with open(LOG_FILE, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def get_client():
