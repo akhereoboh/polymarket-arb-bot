@@ -22,7 +22,6 @@ import time
 from datetime import datetime, timezone
 
 import aiohttp
-from bot import update_signal_outcome
 
 # ── config ──────────────────────────────────────────────────────────────
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
@@ -283,7 +282,7 @@ async def _resolve_outcome(
                     get_balance_fn=get_balance_fn,
                 )
                 try:
-                    
+                    from bot import update_signal_outcome
                     update_signal_outcome(
                         condition_id=condition_id,
                         won=won,
