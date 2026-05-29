@@ -28,7 +28,7 @@ sys.path.insert(0, _HERE)
 import bot as bot1
 from bot import (
     check_signal,
-    get_opening_chainlink_price,
+    # get_opening_chainlink_price,
     RPC,
 )
 
@@ -147,7 +147,9 @@ async def _process_market(session, market, now_ts):
 
     # Store opening CL when first seen
     if cid not in _opening_prices:
-        opening = await get_opening_chainlink_price(session, end_time, tf)
+        opening = await ca.get_opening_chainlink_price_for_asset(
+            session, asset, end_time, tf, RPC
+        )
         _opening_prices[cid] = opening
         _log(f'New: [{asset.upper()} {tf}] {market["title"]} | {seconds_left:.0f}s | Opening CL: ${opening:,.4f}')
 

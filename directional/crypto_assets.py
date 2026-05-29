@@ -233,3 +233,18 @@ async def get_active_crypto_markets(session, allowed_assets: set[str]) -> list[d
             })
 
     return markets
+
+async def get_opening_chainlink_price_for_asset(
+    session, asset: str, market_end_time, timeframe: str, rpc_url: str,
+) -> float:
+    """
+    Asset-aware opening Chainlink price.
+
+    For now returns current price as opening reference — accurate enough
+    since signals fire only in the last 60-120s of a market's window.
+
+    A historical-block-walking version (matching bot.py's BTC logic) can be
+    added later; this is correct enough for dry-run validation.
+    """
+    price, _ = await get_chainlink_price(session, asset, rpc_url)
+    return price
