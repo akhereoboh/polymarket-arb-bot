@@ -98,10 +98,19 @@ async def _binance_feeder(asset: str):
 
 # ─── order placement (ported from bot.py's place_trade) ──────────────────
 
+# Polymarket minimum order value — orders below this get rejected by CLOB
+POLYMARKET_MIN_ORDER_USDC = 1.00
+
+
 def _calc_position_size(crowd_price: float) -> int:
-    """How many shares to buy for our TRADE_AMOUNT at the crowd price."""
-    shares = int(TRADE_AMOUNT / crowd_price)
-    return max(5, shares)
+    """
+    Shares to buy: at least enough to clear Polymarket's $1 min order rule,
+    and at least enough to spend our TRADE_AMOUNT budget.
+    """
+    # +1 ensures we're strictly above min (handles rounding when 1.0/price is integer)
+    min_shares_for_polymarket = int(POLYMARKET_MIN_ORDER_USDC / crowd_price) + 1
+    shares_for_budget = int(TRADE_AMOUNT / crowd_price)
+    return max(min_shares_for_polymarket, shares_for_budget)
 
 
 async def _place_trade(market: dict, direction: str, shares: int, confidence: float):
