@@ -49,7 +49,10 @@ from telegram_alerts import send_message
 
 # Our multi-asset utilities
 import crypto_assets as ca
+import csv
+from pathlib import Path
 
+BOT2_LOG_FILE = os.path.join(_HERE, 'bot2_signals_log.csv')
 
 # ─── config ──────────────────────────────────────────────────────────────
 SAFE_MODE        = os.getenv('BOT2_SAFE_MODE', 'true').lower() == 'true'
@@ -76,6 +79,84 @@ _traded: set[str] = set()
 
 def _log(msg: str) -> None:
     print(f'[bot2 {datetime.now(timezone.utc).strftime("%H:%M:%S")}] {msg}', flush=True)
+
+
+def log_bot2_signal(
+    market: dict,
+    direction: str,
+    confidence: float,
+    cl_price: float,
+    opening_cl: float,
+    bn_price: float,
+    opening_bn: float,
+    shares: int,
+    max_fill_price: float,
+    asks_at_cap: int,
+    safe_mode: bool,
+    trade_result: dict | None = None,
+):
+    """Append a complete signal row to bot2_signals_log.csv."""
+    file_exists = Path(BOT2_LOG_FILE).exists()
+    fieldnames = [
+        'timestamp', 'asset', 'timeframe', 'market_title', 'slug', 'condition_id',
+        'direction', 'crowd_price', 'shares', 'max_fill_price', 'cost_estimate',
+        'cl_price', 'opening_cl', 'cl_pct',
+        'bn_price', 'opening_bn', 'bn_pct',
+        'confidence', 'asks_at_cap',
+        'safe_mode', 'trade_status',
+        'outcome', 'fill_price', 'fill_size', 'fill_pnl', 'fill_tx',
+    ]
+
+    cl_pct = (cl_price - opening_cl) / opening_cl * 100 if opening_cl else 0
+    bn_pct = (bn_price - opening_bn) / opening_bn * 100 if opening_bn else 0
+    crowd_price = market['up_price'] if direction == 'up' else market['down_price']
+
+    trade_status = 'PENDING'
+    if trade_result:
+        if trade_result.get('status') == 'dry_run':
+            trade_status = 'DRY_RUN'
+        elif trade_result.get('status') == 'error':
+            trade_status = f"ERROR: {trade_result.get('error', '')[:50]}"
+        elif trade_result.get('orderID'):
+            trade_status = 'PLACED'
+        else:
+            trade_status = str(trade_result)[:50]
+
+    with open(BOT2_LOG_FILE, 'a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow({
+            'timestamp':       datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+            'asset':           market['asset'].upper(),
+            'timeframe':       market.get('timeframe', ''),
+            'market_title':    market.get('title', ''),
+            'slug':            market.get('slug', ''),
+            'condition_id':    market.get('condition_id', ''),
+            'direction':       direction.upper(),
+            'crowd_price':     crowd_price,
+            'shares':          shares,
+            'max_fill_price':  max_fill_price,
+            'cost_estimate':   round(shares * max_fill_price, 4),
+            'cl_price':        round(cl_price, 6),
+            'opening_cl':      round(opening_cl, 6),
+            'cl_pct':          round(cl_pct, 4),
+            'bn_price':        round(bn_price, 6),
+            'opening_bn':      round(opening_bn, 6),
+            'bn_pct':          round(bn_pct, 4),
+            'confidence':      round(confidence, 4),
+            'asks_at_cap':     asks_at_cap,
+            'safe_mode':       safe_mode,
+            'trade_status':    trade_status,
+            # Outcome columns — populated by analyzer script later
+            'outcome':         '',
+            'fill_price':      '',
+            'fill_size':       '',
+            'fill_pnl':        '',
+            'fill_tx':         '',
+        })
+
+
 
 
 # ─── per-asset Binance feeders ───────────────────────────────────────────
@@ -361,10 +442,43 @@ async def _process_market(session, market, now_ts):
     # Mark as traded BEFORE placing so we don't double-fire on the next poll
     _traded.add(cid)
 
-    # Place the trade (dry-run or real, decided inside _place_trade)
+    # Replacement block for the trade placement section at end of _process_market:
+
+    # Calculate position size and max fill price (for logging)
     shares = _calc_position_size(crowd_price)
+    max_fill_price = round(min(crowd_price + FAK_BUFFER, HARD_FILL_CAP), 2)
+
+    # Count available asks at/below cap (for logging)
+    asks_at_cap = 0
+    try:
+        book = await get_order_book(market['up_token'] if direction == 'up' else market['down_token'])
+        asks_at_cap = sum(1 for a in book.get('asks', []) if float(a['price']) <= max_fill_price)
+    except Exception:
+        pass
+
+    # Place the trade (dry-run or real, decided inside _place_trade)
     trade_result = await _place_trade(market, direction, shares, confidence)
     _log(f'Trade result: {trade_result}')
+
+    # Log to CSV — for analysis (works in both DRY and LIVE modes)
+    try:
+        log_bot2_signal(
+            market=market,
+            direction=direction,
+            confidence=confidence,
+            cl_price=cl_price,
+            opening_cl=opening_price,
+            bn_price=bn_now,
+            opening_bn=bn_opening,
+            shares=shares,
+            max_fill_price=max_fill_price,
+            asks_at_cap=asks_at_cap,
+            safe_mode=SAFE_MODE,
+            trade_result=trade_result,
+        )
+    except Exception as e:
+        _log(f'CSV log error: {e}')
+
 
 
 async def main():
