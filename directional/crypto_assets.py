@@ -212,10 +212,6 @@ async def get_active_crypto_markets(session, allowed_assets: set[str]) -> list[d
             if len(token_ids) < 2 or len(prices) < 2:
                 continue
 
-            volume = float(m.get('volume', 0))
-            if volume < 1000:
-                continue
-
             condition_id = m.get('conditionId', '')
             if not condition_id or condition_id in seen_cids:
                 continue
