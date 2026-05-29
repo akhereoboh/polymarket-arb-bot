@@ -229,7 +229,7 @@ async def get_active_crypto_markets(session, allowed_assets: set[str]) -> list[d
                 'down_token':   token_ids[1],
                 'up_price':     float(prices[0]),
                 'down_price':   float(prices[1]),
-                'volume':       volume,
+                # 'volume':       volume,
             })
 
     return markets
