@@ -567,6 +567,7 @@ async def place_trade(market: dict, direction: str,
     ask_count = len(asks)
     asks_below_cap_count = len(available_asks)
 
+    # ── Branch 1: No asks at or below our cap → straight to GTC ────────
     if not available_asks:
         print(f'  → No sellers at or below {max_price} — routing to GTC fallback')
         all_asks_top = float(asks[0]['price']) if asks else None
@@ -591,6 +592,7 @@ async def place_trade(market: dict, direction: str,
         )
         return gtc_result
 
+    # ── Branch 2: There are asks at acceptable price → try FAK first ───
     # use actual best ask price + tiny buffer, capped at HARD_FILL_CAP
     best_ask = float(available_asks[0]['price'])
     total_available = sum(float(a['size']) for a in available_asks)
@@ -609,6 +611,7 @@ async def place_trade(market: dict, direction: str,
         print(f'  [DRY RUN] Would place {side_str} order')
         return {'status': 'dry_run', 'logged': True}
 
+    # Submit the FAK order
     try:
         client = get_client()
         result = client.create_and_post_order(
@@ -622,17 +625,19 @@ async def place_trade(market: dict, direction: str,
             order_type=OrderType.FAK,
         )
         print(f'  [Order] FAK result: {result}')
-
-        # Submit the FAK
-        
     except Exception as e:
+        # FAK error — log it, then route to GTC fallback
+        print(f'  [Order] FAK error: {e}')
         log_execution_event(market, direction, 'fak_error',
                             raw_price=raw_price,
                             attempted_price=price,
                             best_ask=best_ask,
                             extra=f'exception={str(e)[:200]}')
-        raise  # propagate the exception so we don't proceed silently
+        # Fall through to GTC fallback below
+        result = None
 
+    # Check fill status (if FAK didn't throw)
+    if result is not None:
         filled, shares_filled = fak_filled(result)
         if filled:
             print(f'  [Order] FAK filled {shares_filled} shares')
@@ -643,7 +648,7 @@ async def place_trade(market: dict, direction: str,
                                 extra=f'shares={shares_filled}')
             return result
 
-        # FAK didn't fill — log it, then try GTC fallback
+        # FAK didn't fill — log it
         print(f'  [Order] FAK no-fill — trying GTC fallback')
         log_execution_event(market, direction, 'fak_no_fill',
                             raw_price=raw_price,
@@ -651,6 +656,8 @@ async def place_trade(market: dict, direction: str,
                             best_ask=best_ask,
                             extra=f'result={str(result)[:200]}')
 
+    # GTC fallback (either FAK errored or FAK didn't fill)
+    try:
         gtc_result = await place_gtc_fallback(
             client_factory=get_client,
             market=market,
@@ -666,10 +673,10 @@ async def place_trade(market: dict, direction: str,
             log_callback=log_execution_event,
         )
         return gtc_result
-
     except Exception as e:
-        print(f'  [Order] Error: {e}')
+        print(f'  [Order] GTC fallback error: {e}')
         return {'status': 'error', 'error': str(e)}
+
 
 
 async def get_opening_chainlink_price(session, market_end_time, timeframe='5m') -> float:
