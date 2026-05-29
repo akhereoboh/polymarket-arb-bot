@@ -301,7 +301,7 @@ async def get_active_btc_markets(session) -> list:
             'down_token':   token_ids[1],
             'up_price':     float(prices[0]),
             'down_price':   float(prices[1]),
-            # 'volume':       volume,
+            'volume':       float(m.get('volume', 0)),   
             'timeframe':    tf,
         })
 

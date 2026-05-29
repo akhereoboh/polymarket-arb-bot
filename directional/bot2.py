@@ -2,16 +2,10 @@
 bot2.py — multi-crypto directional bot.
 
 Runs alongside bot.py. bot.py owns BTC live trading; bot2.py handles all
-OTHER crypto up/down markets (ETH/SOL/BNB/DOGE/XRP/HYPE), DRY-RUN by default
+OTHER crypto up/down markets (ETH/SOL/BNB/DOGE/XRP), DRY-RUN by default
 via SAFE_MODE=true.
 
 Imports signal logic and execution helpers from bot.py rather than duplicating.
-
-Config (via .env, defaults sensible for safe rollout):
-    BOT2_SAFE_MODE       — 'true' = dry-run regardless of DRY_RUN.   Default: true
-    BOT2_ASSETS          — comma-separated assets to scan.            Default: eth,sol,bnb,doge,xrp,hype
-    BOT2_TRADE_AMOUNT    — USD per trade when going live.             Default: same as bot.py TRADE_AMOUNT
-    BOT2_POLL_INTERVAL   — seconds between scans.                     Default: 5
 """
 
 import asyncio
@@ -34,7 +28,7 @@ sys.path.insert(0, _HERE)
 import bot as bot1
 from bot import (
     check_signal,
-    get_opening_chainlink_price,  # we'll wrap this with asset awareness
+    get_opening_chainlink_price,
     RPC,
 )
 
@@ -52,7 +46,6 @@ ASSETS_TO_SCAN = [
     for a in os.getenv('BOT2_ASSETS', 'eth,sol,bnb,doge,xrp,hype').split(',')
     if a.strip()
 ]
-# Filter to assets that ACTUALLY have Chainlink feeds (skips hype until verified)
 ASSETS_TO_SCAN = [a for a in ASSETS_TO_SCAN
                   if a in ca.SUPPORTED_ASSETS and ca.asset_has_chainlink(a)]
 
@@ -62,21 +55,20 @@ POLL_INTERVAL  = int(os.getenv('BOT2_POLL_INTERVAL', '5'))
 
 
 # ─── state ───────────────────────────────────────────────────────────────
-# Per-asset price history (parallel to bot.py's _btc_history / _cl_history)
 _bn_history_by_asset: dict[str, list[tuple[float, float]]] = {a: [] for a in ASSETS_TO_SCAN}
 _cl_history_by_asset: dict[str, list[tuple[float, float]]] = {a: [] for a in ASSETS_TO_SCAN}
-_opening_prices: dict[str, float] = {}   # condition_id -> opening CL price
-_traded: set[str] = set()                # condition_ids we've fired on (dry-run still tracks)
+_opening_prices: dict[str, float] = {}
+_traded: set[str] = set()
 
 
 def _log(msg: str) -> None:
     print(f'[bot2 {datetime.now(timezone.utc).strftime("%H:%M:%S")}] {msg}', flush=True)
 
 
-# ─── per-asset price feeders ─────────────────────────────────────────────
+# ─── per-asset Binance price feeders ─────────────────────────────────────
 
 async def _binance_feeder(asset: str):
-    """Mirror of bot.py's price_monitor(), but per-asset and writes to local history."""
+    """Mirror of bot.py's price_monitor(), but per-asset."""
     async with aiohttp.ClientSession() as session:
         while True:
             try:
@@ -147,17 +139,17 @@ async def _process_market(session, market, now_ts):
     end_time    = market['end_time']
     tf          = market['timeframe']
 
-    # Skip if we have no recent CL price (chain feed failed earlier this cycle)
+    # Need recent CL price for this asset
     cl_hist = _cl_history_by_asset.get(asset, [])
     if not cl_hist:
         return
     cl_price = cl_hist[-1][1]
 
-    # Store opening CL price when we first see the market
+    # Store opening CL when first seen
     if cid not in _opening_prices:
         opening = await get_opening_chainlink_price(session, end_time, tf)
         _opening_prices[cid] = opening
-        _log(f'New: [{asset.upper()} {tf}] {market["title"]} | {seconds_left:.0f}s | Opening CL: ${opening:,.2f}')
+        _log(f'New: [{asset.upper()} {tf}] {market["title"]} | {seconds_left:.0f}s | Opening CL: ${opening:,.4f}')
 
     if cid in _traded:
         return
@@ -176,19 +168,29 @@ async def _process_market(session, market, now_ts):
     if not bn_hist:
         return
 
-    # Pick the BN price closest to (now - lookback) -- same as bot.py
+    # BN price closest to (now - lookback) — same approach as bot.py
     bn_opening = min(bn_hist, key=lambda x: abs(x[0] - target_ts))[1]
     bn_now     = bn_hist[-1][1]
 
-    # Use bot.py's signal logic — same MIN_MOVE_PCT and direction selection
-    decision = check_signal(cl_price, opening_price, bn_now, bn_opening)
+    # Call bot.py's check_signal with the full 9-argument signature.
+    # btc_history/cl_history params take this asset's histories (the
+    # variable names in bot.py are BTC-specific but the logic is generic).
+    direction, confidence = check_signal(
+        cl_price,            # cl_price
+        opening_price,       # opening_price
+        bn_now,              # binance_now
+        bn_opening,          # binance_opening
+        market['up_price'],  # up_price
+        market['down_price'],# down_price
+        _bn_history_by_asset[asset],  # btc_history (this asset's BN history)
+        _cl_history_by_asset[asset],  # cl_history (this asset's CL history)
+        seconds_left,        # seconds_left
+    )
 
-    if not decision or decision.get('direction') == 'none':
+    if direction == 'none':
         return
 
-    # Fire — but only as DRY_RUN unless SAFE_MODE off
-    direction = decision['direction']
-    confidence = decision.get('confidence', 0.0)
+    # Got a signal — fire (dry-run by default)
     cl_pct = (cl_price - opening_price) / opening_price * 100
     bn_pct = (bn_now - bn_opening) / bn_opening * 100
     crowd_price = market['up_price'] if direction == 'up' else market['down_price']
@@ -208,15 +210,12 @@ async def _process_market(session, market, now_ts):
     _traded.add(cid)
 
     if not SAFE_MODE:
-        # When you flip the switch, this is where the real order goes.
-        # Reuse bot.py's order placement path; left disabled until you say go.
         await send_message(f'⚠️ bot2 LIVE mode but order execution not wired yet — '
                            f'no order placed for {asset.upper()} {tf}')
 
 
 async def main():
     try:
-        # Start per-asset Binance feeders + the scanner concurrently
         feeders = [asyncio.create_task(_binance_feeder(a)) for a in ASSETS_TO_SCAN]
         scanner = asyncio.create_task(market_scanner())
         await asyncio.gather(scanner, *feeders)
