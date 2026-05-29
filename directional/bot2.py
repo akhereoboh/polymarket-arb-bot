@@ -1,11 +1,14 @@
 """
-bot2.py — multi-crypto directional bot.
+bot2.py — multi-crypto directional bot with live execution.
 
-Runs alongside bot.py. bot.py owns BTC live trading; bot2.py handles all
-OTHER crypto up/down markets (ETH/SOL/BNB/DOGE/XRP), DRY-RUN by default
-via SAFE_MODE=true.
+Runs alongside bot.py. bot.py owns BTC; bot2.py handles ETH/SOL/BNB/DOGE/XRP.
 
-Imports signal logic and execution helpers from bot.py rather than duplicating.
+Config (.env):
+    BOT2_SAFE_MODE       'true' = dry-run only, no orders placed. Default: true
+    BOT2_ASSETS          Comma-separated assets. Default: eth,sol,bnb,doge,xrp
+    BOT2_TRADE_AMOUNT    USD per trade. Default: 1
+    BOT2_HARD_FILL_CAP   Max fill price. Default: 0.995
+    BOT2_POLL_INTERVAL   Seconds between scans. Default: 5
 """
 
 import asyncio
@@ -21,18 +24,27 @@ from dotenv import load_dotenv
 _HERE = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_HERE, '.env'))
 
-# Make local directory importable so we get bot and crypto_assets
+# Make local directory importable
 sys.path.insert(0, _HERE)
+sys.path.insert(0, '/root/my-clob-client')
 
-# Import signal logic and helpers from the live bot
+# Import signal logic + execution helpers from the live bot
 import bot as bot1
 from bot import (
     check_signal,
-    # get_opening_chainlink_price,
+    get_order_book,
+    fak_filled,
+    log_execution_event,
+    get_client,
     RPC,
 )
+from gtc_fallback import place_gtc_fallback
 
-# Telegram for our dry-run alerts
+from py_clob_client_v2 import (
+    OrderArgs, OrderType, PartialCreateOrderOptions, Side
+)
+
+# Telegram for alerts
 from telegram_alerts import send_message
 
 # Our multi-asset utilities
@@ -40,18 +52,19 @@ import crypto_assets as ca
 
 
 # ─── config ──────────────────────────────────────────────────────────────
-SAFE_MODE      = os.getenv('BOT2_SAFE_MODE', 'true').lower() == 'true'
-ASSETS_TO_SCAN = [
+SAFE_MODE        = os.getenv('BOT2_SAFE_MODE', 'true').lower() == 'true'
+ASSETS_TO_SCAN   = [
     a.strip().lower()
     for a in os.getenv('BOT2_ASSETS', 'eth,sol,bnb,doge,xrp,hype').split(',')
     if a.strip()
 ]
-ASSETS_TO_SCAN = [a for a in ASSETS_TO_SCAN
-                  if a in ca.SUPPORTED_ASSETS and ca.asset_has_chainlink(a)]
+ASSETS_TO_SCAN   = [a for a in ASSETS_TO_SCAN
+                    if a in ca.SUPPORTED_ASSETS and ca.asset_has_chainlink(a)]
 
-TRADE_AMOUNT   = float(os.getenv('BOT2_TRADE_AMOUNT',
-                                 os.getenv('TRADE_AMOUNT', '4')))
-POLL_INTERVAL  = int(os.getenv('BOT2_POLL_INTERVAL', '5'))
+TRADE_AMOUNT     = float(os.getenv('BOT2_TRADE_AMOUNT', '1'))
+HARD_FILL_CAP    = float(os.getenv('BOT2_HARD_FILL_CAP', '0.995'))
+POLL_INTERVAL    = int(os.getenv('BOT2_POLL_INTERVAL', '5'))
+FAK_BUFFER       = 0.05  # how far above raw_price we'll FAK
 
 
 # ─── state ───────────────────────────────────────────────────────────────
@@ -65,10 +78,9 @@ def _log(msg: str) -> None:
     print(f'[bot2 {datetime.now(timezone.utc).strftime("%H:%M:%S")}] {msg}', flush=True)
 
 
-# ─── per-asset Binance price feeders ─────────────────────────────────────
+# ─── per-asset Binance feeders ───────────────────────────────────────────
 
 async def _binance_feeder(asset: str):
-    """Mirror of bot.py's price_monitor(), but per-asset."""
     async with aiohttp.ClientSession() as session:
         while True:
             try:
@@ -84,16 +96,149 @@ async def _binance_feeder(asset: str):
             await asyncio.sleep(5)
 
 
+# ─── order placement (ported from bot.py's place_trade) ──────────────────
+
+def _calc_position_size(crowd_price: float) -> int:
+    """How many shares to buy for our TRADE_AMOUNT at the crowd price."""
+    shares = int(TRADE_AMOUNT / crowd_price)
+    return max(5, shares)
+
+
+async def _place_trade(market: dict, direction: str, shares: int, confidence: float):
+    """
+    Place a real or dry-run trade. Mirrors bot.py's place_trade pattern:
+      1. Check order book for asks at acceptable price
+      2. If no asks → GTC fallback
+      3. If asks → FAK first, fall through to GTC if it doesn't fill
+    """
+    asset = market['asset']
+    token_id = market['up_token'] if direction == 'up' else market['down_token']
+    raw_price = market['up_price'] if direction == 'up' else market['down_price']
+
+    # Check order book
+    book = await get_order_book(token_id)
+    asks = sorted(book['asks'], key=lambda x: float(x['price']))
+
+    max_price = round(min(raw_price + FAK_BUFFER, HARD_FILL_CAP), 2)
+    available_asks = [a for a in asks if float(a['price']) <= max_price]
+
+    ask_count = len(asks)
+    side_str = 'UP' if direction == 'up' else 'DOWN'
+
+    _log(f'[Trade] [{asset.upper()} {market["timeframe"]}] {market["title"][:50]}')
+    _log(f'  Direction: {side_str} | RawPrice: {raw_price} | MaxFill: {max_price} | Shares: {shares} | Conf: {confidence:.4f}%')
+    _log(f'  Cost: ~${shares * max_price:.2f} | DRY: {SAFE_MODE} | Asks at/below cap: {len(available_asks)}/{ask_count}')
+
+    if SAFE_MODE:
+        _log(f'  [DRY] Would place {side_str} — skipping execution')
+        return {'status': 'dry_run'}
+
+    # ── Branch 1: No asks at acceptable price → GTC fallback ───────────
+    if not available_asks:
+        _log(f'  → No sellers at/below {max_price} — GTC fallback')
+        all_asks_top = float(asks[0]['price']) if asks else None
+        log_execution_event(market, direction, 'fak_no_liquidity',
+                            raw_price=raw_price,
+                            attempted_price=max_price,
+                            best_ask=all_asks_top,
+                            ask_count=ask_count,
+                            asks_below_cap=0,
+                            extra=f'asks_count={ask_count}')
+        try:
+            return await place_gtc_fallback(
+                client_factory=get_client,
+                market=market,
+                direction=direction,
+                shares=shares,
+                confidence=confidence,
+                book=book,
+                OrderArgs=OrderArgs,
+                OrderType=OrderType,
+                PartialCreateOrderOptions=PartialCreateOrderOptions,
+                Side=Side,
+            )
+        except Exception as e:
+            _log(f'  [GTC] error: {e}')
+            return {'status': 'error', 'error': str(e)}
+
+    # ── Branch 2: Asks available → try FAK first ───────────────────────
+    best_ask = float(available_asks[0]['price'])
+    price = round(min(best_ask + 0.01, HARD_FILL_CAP), 2)
+    total_available = sum(float(a['size']) for a in available_asks)
+    _log(f'  → Order book: best ask {best_ask} | avail shares: {total_available:.0f}')
+    _log(f'  → FAK at {price}')
+
+    result = None
+    try:
+        client = get_client()
+        result = client.create_and_post_order(
+            order_args=OrderArgs(
+                token_id=token_id,
+                price=price,
+                size=shares,
+                side=Side.BUY,
+            ),
+            options=PartialCreateOrderOptions(tick_size='0.01', neg_risk=False),
+            order_type=OrderType.FAK,
+        )
+        _log(f'  [Order] FAK result: {result}')
+    except Exception as e:
+        _log(f'  [Order] FAK error: {e}')
+        log_execution_event(market, direction, 'fak_error',
+                            raw_price=raw_price,
+                            attempted_price=price,
+                            best_ask=best_ask,
+                            extra=f'exception={str(e)[:200]}')
+
+    # Check fill status if FAK ran without error
+    if result is not None:
+        filled, shares_filled = fak_filled(result)
+        if filled:
+            _log(f'  [Order] FAK filled {shares_filled} shares')
+            log_execution_event(market, direction, 'fak_filled',
+                                raw_price=raw_price,
+                                attempted_price=price,
+                                best_ask=best_ask,
+                                extra=f'shares={shares_filled}')
+            return result
+        _log(f'  [Order] FAK no-fill — trying GTC fallback')
+        log_execution_event(market, direction, 'fak_no_fill',
+                            raw_price=raw_price,
+                            attempted_price=price,
+                            best_ask=best_ask,
+                            extra=f'result={str(result)[:200]}')
+
+    # GTC fallback (FAK errored OR didn't fill)
+    try:
+        return await place_gtc_fallback(
+            client_factory=get_client,
+            market=market,
+            direction=direction,
+            shares=shares,
+            confidence=confidence,
+            book=book,
+            OrderArgs=OrderArgs,
+            OrderType=OrderType,
+            PartialCreateOrderOptions=PartialCreateOrderOptions,
+            Side=Side,
+            early_mode=False,
+            log_callback=log_execution_event,
+        )
+    except Exception as e:
+        _log(f'  [GTC] error: {e}')
+        return {'status': 'error', 'error': str(e)}
+
+
 # ─── main scanner ────────────────────────────────────────────────────────
 
 async def market_scanner():
     _log(f'Bot2 starting. SAFE_MODE={SAFE_MODE} | Assets={ASSETS_TO_SCAN}')
-    _log(f'Trade amount: ${TRADE_AMOUNT} (effective only when SAFE_MODE=false)')
+    _log(f'TRADE_AMOUNT=${TRADE_AMOUNT} | HARD_FILL_CAP={HARD_FILL_CAP}')
     await send_message(
         f'🤖 bot2 started\n'
         f'Assets: {", ".join(ASSETS_TO_SCAN)}\n'
-        f'Mode: {"DRY-RUN (safe)" if SAFE_MODE else "LIVE"}\n'
-        f'Trade amount: ${TRADE_AMOUNT}'
+        f'Mode: {"DRY-RUN" if SAFE_MODE else "LIVE"}\n'
+        f'Trade: ${TRADE_AMOUNT} per fire | Cap: {HARD_FILL_CAP}'
     )
 
     async with aiohttp.ClientSession() as session:
@@ -123,7 +268,6 @@ async def _scan_once(session: aiohttp.ClientSession):
         while h and h[0][0] < cutoff:
             h.pop(0)
 
-    # Get active markets across all assets
     markets = await ca.get_active_crypto_markets(session, set(ASSETS_TO_SCAN))
     if not markets:
         return
@@ -133,19 +277,17 @@ async def _scan_once(session: aiohttp.ClientSession):
 
 
 async def _process_market(session, market, now_ts):
-    asset       = market['asset']
-    cid         = market['condition_id']
+    asset = market['asset']
+    cid = market['condition_id']
     seconds_left = market['seconds_left']
-    end_time    = market['end_time']
-    tf          = market['timeframe']
+    end_time = market['end_time']
+    tf = market['timeframe']
 
-    # Need recent CL price for this asset
     cl_hist = _cl_history_by_asset.get(asset, [])
     if not cl_hist:
         return
     cl_price = cl_hist[-1][1]
 
-    # Store opening CL when first seen
     if cid not in _opening_prices:
         opening = await ca.get_opening_chainlink_price_for_asset(
             session, asset, end_time, tf, RPC
@@ -158,35 +300,29 @@ async def _process_market(session, market, now_ts):
 
     opening_price = _opening_prices[cid]
 
-    # Entry window matches bot.py: 60s for 5m, 120s for 15m
+    # Entry window matches bot.py
     normal_window = 120 if tf == '15m' else 60
     if seconds_left > normal_window:
         return
 
-    # Need a Binance opening price matching the timeframe lookback
-    lookback   = 900 if tf == '15m' else 300
-    target_ts  = now_ts - lookback
-    bn_hist    = _bn_history_by_asset.get(asset, [])
+    # Need Binance opening price
+    lookback = 900 if tf == '15m' else 300
+    target_ts = now_ts - lookback
+    bn_hist = _bn_history_by_asset.get(asset, [])
     if not bn_hist:
         return
 
-    # BN price closest to (now - lookback) — same approach as bot.py
     bn_opening = min(bn_hist, key=lambda x: abs(x[0] - target_ts))[1]
-    bn_now     = bn_hist[-1][1]
+    bn_now = bn_hist[-1][1]
 
-    # Call bot.py's check_signal with the full 9-argument signature.
-    # btc_history/cl_history params take this asset's histories (the
-    # variable names in bot.py are BTC-specific but the logic is generic).
+    # Signal check (handle bot.py's inconsistent return)
     result = check_signal(
-        cl_price,                       # cl_price
-        opening_price,                  # opening_price
-        bn_now,                         # binance_now
-        bn_opening,                     # binance_opening
-        market['up_price'],             # up_price
-        market['down_price'],           # down_price
-        _bn_history_by_asset[asset],    # btc_history (asset's BN history)
-        _cl_history_by_asset[asset],    # cl_history (asset's CL history)
-        seconds_left,                   # seconds_left
+        cl_price, opening_price,
+        bn_now, bn_opening,
+        market['up_price'], market['down_price'],
+        _bn_history_by_asset[asset],
+        _cl_history_by_asset[asset],
+        seconds_left,
     )
     if len(result) == 2:
         direction, confidence = result
@@ -197,7 +333,7 @@ async def _process_market(session, market, now_ts):
     if direction == 'none':
         return
 
-    # Got a signal — fire (dry-run by default)
+    # Build signal alert
     cl_pct = (cl_price - opening_price) / opening_price * 100
     bn_pct = (bn_now - bn_opening) / bn_opening * 100
     crowd_price = market['up_price'] if direction == 'up' else market['down_price']
@@ -211,14 +347,15 @@ async def _process_market(session, market, now_ts):
         f'Confidence: {confidence:.4f}%\n'
         f'Crowd: {crowd_price}'
     )
-    _log(msg.replace('\n', ' | '))
     await send_message(msg)
 
+    # Mark as traded BEFORE placing so we don't double-fire on the next poll
     _traded.add(cid)
 
-    if not SAFE_MODE:
-        await send_message(f'⚠️ bot2 LIVE mode but order execution not wired yet — '
-                           f'no order placed for {asset.upper()} {tf}')
+    # Place the trade (dry-run or real, decided inside _place_trade)
+    shares = _calc_position_size(crowd_price)
+    trade_result = await _place_trade(market, direction, shares, confidence)
+    _log(f'Trade result: {trade_result}')
 
 
 async def main():
