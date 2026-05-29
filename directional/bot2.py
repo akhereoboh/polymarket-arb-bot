@@ -177,17 +177,22 @@ async def _process_market(session, market, now_ts):
     # Call bot.py's check_signal with the full 9-argument signature.
     # btc_history/cl_history params take this asset's histories (the
     # variable names in bot.py are BTC-specific but the logic is generic).
-    direction, confidence = check_signal(
-        cl_price,            # cl_price
-        opening_price,       # opening_price
-        bn_now,              # binance_now
-        bn_opening,          # binance_opening
-        market['up_price'],  # up_price
-        market['down_price'],# down_price
-        _bn_history_by_asset[asset],  # btc_history (this asset's BN history)
-        _cl_history_by_asset[asset],  # cl_history (this asset's CL history)
-        seconds_left,        # seconds_left
+    result = check_signal(
+        cl_price,                       # cl_price
+        opening_price,                  # opening_price
+        bn_now,                         # binance_now
+        bn_opening,                     # binance_opening
+        market['up_price'],             # up_price
+        market['down_price'],           # down_price
+        _bn_history_by_asset[asset],    # btc_history (asset's BN history)
+        _cl_history_by_asset[asset],    # cl_history (asset's CL history)
+        seconds_left,                   # seconds_left
     )
+    if len(result) == 2:
+        direction, confidence = result
+        momentum_info = None
+    else:
+        direction, confidence, momentum_info = result
 
     if direction == 'none':
         return
