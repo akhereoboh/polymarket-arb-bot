@@ -48,8 +48,8 @@ TEST_THRESHOLDS = [0.025, 0.035, 0.05, 0.07, 0.10]
 ENTRY_OFFSETS_5M = [60, 90, 120]
 ENTRY_OFFSETS_15M = [60, 120, 180, 240, 300]
 
-RESULTS_CSV = './backtest_results_v2.csv'
-SUMMARY_TXT = './backtest_summary_v2.txt'
+RESULTS_CSV_TEMPLATE = './backtest_results_v2_{coin}.csv'
+SUMMARY_TXT_TEMPLATE = './backtest_summary_v2_{coin}.txt'
 
 
 def api_get(path, params=None, retries=3):
@@ -215,33 +215,33 @@ def backtest_market(market, coin):
     return rows
 
 
-def write_results(all_rows):
+def write_results(all_rows, coin):
     if not all_rows:
         print('No results.')
         return
 
+    results_csv = RESULTS_CSV_TEMPLATE.format(coin=coin)
+    summary_txt = SUMMARY_TXT_TEMPLATE.format(coin=coin)
+
     fields = list(all_rows[0].keys())
-    with open(RESULTS_CSV, 'w', newline='') as f:
+    with open(results_csv, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
         w.writerows(all_rows)
-    print(f'\nWrote {len(all_rows)} rows to {RESULTS_CSV}')
+    print(f'\nWrote {len(all_rows)} rows to {results_csv}')
 
     # Post-hoc analysis at multiple thresholds
     lines = []
     lines.append('=' * 75)
-    lines.append('MULTI-THRESHOLD BACKTEST COMPARISON')
+    lines.append(f'MULTI-THRESHOLD BACKTEST COMPARISON — {coin.upper()}')
     lines.append('=' * 75)
     lines.append(f'Total snapshot evaluations: {len(all_rows)}')
     lines.append('')
 
-    # Header
     lines.append(f'{"Threshold":<12} {"Fires":<8} {"Filled":<8} {"Win%":<8} {"PnL":<12} {"ROI%":<8}')
     lines.append('-' * 60)
 
     for thresh in TEST_THRESHOLDS:
-        # Filter: signals that would have fired at this threshold
-        # AND passed the crowd-disagree check (crowd_price >= 0.35)
         fired = [r for r in all_rows if r['abs_move_pct'] >= thresh and r['crowd_price'] >= 0.35]
         filled = [r for r in fired if r['filled']]
 
@@ -261,7 +261,7 @@ def write_results(all_rows):
     lines.append(f'  - "Filled" = orders that found liquidity at <= HARD_FILL_CAP ({HARD_FILL_CAP})')
     lines.append('  - PnL assumes TRADE_AMOUNT, current FAK ceiling, real historical order books')
 
-    # Best threshold by ROI
+    # Best threshold by total PnL
     lines.append('')
     lines.append('Best threshold by total PnL:')
     best = None
@@ -275,28 +275,37 @@ def write_results(all_rows):
         lines.append(f'  Threshold {best[0]}: ${best[1]:+.2f} on {best[2]} fills')
 
     text = '\n'.join(lines)
-    with open(SUMMARY_TXT, 'w') as f:
+    with open(summary_txt, 'w') as f:
         f.write(text + '\n')
     print('\n' + text)
 
 
+
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description='Multi-threshold backtest for Polymarket up/down markets')
+    parser.add_argument('--coin', default='btc', choices=['btc', 'eth', 'sol'],
+                        help='Which coin to backtest (default: btc)')
+    args = parser.parse_args()
+    coin = args.coin.lower()
+
     print(f'PolyBackTest v2 — multi-threshold backtest')
+    print(f'COIN: {coin.upper()}')
     print(f'HARD_FILL_CAP={HARD_FILL_CAP}, TRADE_AMOUNT=${TRADE_AMOUNT}')
     print(f'Testing thresholds: {TEST_THRESHOLDS}')
 
     all_rows = []
     for mtype in ['5m', '15m']:
-        print(f'\n=== Fetching resolved {mtype} markets ===')
-        markets = list_resolved_markets('btc', mtype)
+        print(f'\n=== Fetching resolved {coin.upper()} {mtype} markets ===')
+        markets = list_resolved_markets(coin, mtype)
         print(f'Got {len(markets)} markets')
         for i, m in enumerate(markets):
             if (i + 1) % 25 == 0:
                 print(f'  {i+1}/{len(markets)}...')
-            all_rows.extend(backtest_market(m, 'btc'))
+            all_rows.extend(backtest_market(m, coin))
             time.sleep(0.05)
 
-    write_results(all_rows)
+    write_results(all_rows, coin)
 
 
 if __name__ == '__main__':
