@@ -307,7 +307,7 @@ async def update_signal_outcome(
         writer.writeheader()
         writer.writerows(rows)
     
-        # Also update Supabase
+    # Also update Supabase
     try:
         import aiohttp
         async with aiohttp.ClientSession() as session:
