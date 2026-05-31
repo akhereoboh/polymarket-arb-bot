@@ -516,7 +516,7 @@ def check_signal(cl_price: float, opening_price: float,
         print(f'  → Momentum: {total_confirmations}/{total_checks} (BN:{bn_confirmations}/{bn_checked} CL:{cl_confirmations}/{cl_checked})')
         if momentum_score < 0.5:
             print(f'  → Momentum against signal — skipping')
-            return 'none', 0.0
+            return 'none', 0.0, ''
 
 
     # bonus confidence if crowd agrees
