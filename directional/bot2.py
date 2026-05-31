@@ -58,8 +58,7 @@ from pyth_history import (
     get_latest_pyth_price,
 )
 
-from signals_db import insert_signal as db_insert_signal, build_signal_row
-
+from signals_db import insert_signal as db_insert_signal, build_signal_row, update_signal_fill as db_update_signal_fill
 
 BOT2_LOG_FILE = os.path.join(_HERE, 'bot2_signals_log.csv')
 
@@ -339,6 +338,21 @@ async def _place_trade(market: dict, direction: str, shares: int, confidence: fl
                                 attempted_price=price,
                                 best_ask=best_ask,
                                 extra=f'shares={shares_filled}')
+            # Update Supabase with fill data
+            try:
+                async with aiohttp.ClientSession() as session:
+                    await db_update_signal_fill(
+                        session,
+                        condition_id=market['condition_id'],
+                        bot='bot2',
+                        direction=direction.upper(),
+                        fill_method='fak',
+                        fill_price=price,
+                        fill_size=shares_filled,
+                        fill_tx=str(result.get('orderID', '')) if isinstance(result, dict) else '',
+                    )
+            except Exception as e:
+                _log(f'  [Log] update_signal_fill (fak) failed: {e}')
             return result
         _log(f'  [Order] FAK no-fill — trying GTC fallback')
         log_execution_event(market, direction, 'fak_no_fill',
