@@ -89,6 +89,51 @@ def _log(msg: str) -> None:
     print(f'[bot2 {datetime.now(timezone.utc).strftime("%H:%M:%S")}] {msg}', flush=True)
 
 
+async def insert_signal_pretrade(
+    market: dict,
+    direction: str,
+    confidence: float,
+    cl_price: float,
+    opening_cl: float,
+    bn_price: float,
+    opening_bn: float,
+    shares: int,
+    max_fill_price: float,
+    asks_at_cap: int,
+    safe_mode: bool,
+):
+    """Insert PENDING signal row to Supabase BEFORE _place_trade.
+    
+    Required because update_signal_fill (called from inside _place_trade) needs
+    the row to exist already, otherwise the UPDATE finds no rows to match.
+    """
+    crowd_price = market['up_price'] if direction == 'up' else market['down_price']
+    row = build_signal_row(
+        bot='bot2',
+        asset=market.get('asset', '?').upper(),
+        timeframe=market.get('timeframe', '?'),
+        market=market,
+        direction=direction,
+        cl_price=cl_price,
+        opening_cl=opening_cl,
+        bn_price=bn_price,
+        opening_bn=opening_bn,
+        confidence=confidence,
+        intended_shares=shares,
+        max_fill_price=max_fill_price,
+        crowd_price=crowd_price,
+        asks_at_cap=asks_at_cap,
+        safe_mode=safe_mode,
+        trade_status='PENDING',
+    )
+    try:
+        async with aiohttp.ClientSession() as session:
+            await db_insert_signal(session, row)
+    except Exception as e:
+        _log(f'Pre-trade insert failed: {e}')
+
+
+
 async def log_bot2_signal(
     market: dict,
     direction: str,
@@ -526,6 +571,22 @@ async def _process_market(session, market, now_ts):
         asks_at_cap = sum(1 for a in book.get('asks', []) if float(a['price']) <= max_fill_price)
     except Exception:
         pass
+
+
+    await insert_signal_pretrade(
+        market=market,
+        direction=direction,
+        confidence=confidence,
+        cl_price=cl_price,
+        opening_cl=opening_price,
+        bn_price=bn_now,
+        opening_bn=bn_opening,
+        shares=shares,
+        max_fill_price=max_fill_price,
+        asks_at_cap=asks_at_cap,
+        safe_mode=SAFE_MODE,
+    )
+
 
     # Place the trade (dry-run or real, decided inside _place_trade)
     trade_result = await _place_trade(market, direction, shares, confidence)
