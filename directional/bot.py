@@ -429,7 +429,7 @@ def check_signal(cl_price: float, opening_price: float,
                  binance_now: float, binance_opening: float,
                  up_price: float, down_price: float,
                  btc_history: list, cl_history: list,
-                 seconds_left: float) -> tuple[str, float]:
+                 seconds_left: float) -> tuple[str, float, str]:
 
     cl_pct = (cl_price - opening_price) / opening_price * 100
     bn_pct = (binance_now - binance_opening) / binance_opening * 100
@@ -441,15 +441,15 @@ def check_signal(cl_price: float, opening_price: float,
 
     # condition 1 — chainlink move must be strong enough
     if not cl_strong:
-        return 'none', 0.0
+        return 'none', 0.0, ''
 
     # condition 2 — binance move must also be strong enough independently
     if not bn_strong:
-        return 'none', 0.0
+        return 'none', 0.0, ''
 
     # condition 3 — both must agree on direction
     if cl_up != bn_up:
-        return 'none', 0.0
+        return 'none', 0.0, ''
 
     # condition 4 — conflict detector: magnitudes must not wildly differ
     spread = abs(abs(cl_pct) - abs(bn_pct))
@@ -458,7 +458,7 @@ def check_signal(cl_price: float, opening_price: float,
         conflict_ratio = spread / avg
         if conflict_ratio > 1.5:
             print(f'  → Signal conflict (CL:{cl_pct:+.4f}% BN:{bn_pct:+.4f}% ratio:{conflict_ratio:.2f}) — skipping')
-            return 'none', 0.0
+            return 'none', 0.0, ''
 
     direction = 'up' if cl_up else 'down'
 
@@ -466,7 +466,7 @@ def check_signal(cl_price: float, opening_price: float,
     crowd_price = up_price if direction == 'up' else down_price
     if crowd_price < 0.35:
         print(f'  → Crowd strongly disagrees ({crowd_price}) — skipping')
-        return 'none', 0.0
+        return 'none', 0.0, ''
 
     # condition 6 — short term momentum confirmation (1,2,3,4 min) on Binance
     now_ts     = time.time()
