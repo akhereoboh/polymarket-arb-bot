@@ -1045,6 +1045,7 @@ async def market_scanner():
                         )
                         schedule_outcome_check(
                             market, direction, shares, entry_price, get_balance,
+                            update_outcome_fn=update_signal_outcome,
                         )
                     else:
                         print(f'[Trade] ⚠️ Balance unchanged — order may not have filled')
@@ -1084,6 +1085,7 @@ async def _on_gtc_fill(market: dict, fill_info: dict) -> None:
     )
     schedule_outcome_check(
         market, direction, shares, fill_price, get_balance,
+        update_outcome_fn=update_signal_outcome,
     )
 
 

@@ -45,7 +45,7 @@ from py_clob_client_v2 import (
 )
 
 # Telegram for alerts
-from telegram_alerts import send_message
+from telegram_alerts import send_message, alert_entry, schedule_outcome_check
 
 # Our multi-asset utilities
 import crypto_assets as ca
@@ -58,7 +58,12 @@ from pyth_history import (
     get_latest_pyth_price,
 )
 
-from signals_db import insert_signal as db_insert_signal, build_signal_row, update_signal_fill as db_update_signal_fill
+from signals_db import (
+    insert_signal as db_insert_signal,
+    build_signal_row,
+    update_signal_fill as db_update_signal_fill,
+    update_signal_outcome as db_update_signal_outcome,
+)
 
 BOT2_LOG_FILE = os.path.join(_HERE, 'bot2_signals_log.csv')
 
@@ -83,6 +88,39 @@ _bn_history_by_asset: dict[str, list[tuple[float, float]]] = {a: [] for a in ASS
 _cl_history_by_asset: dict[str, list[tuple[float, float]]] = {a: [] for a in ASSETS_TO_SCAN}
 _opening_prices: dict[str, float] = {}
 _traded: set[str] = set()
+
+
+async def fetch_wallet_balance() -> float:
+    """Fetch current USDC balance from Polymarket. Returns 0 on error."""
+    try:
+        from py_clob_client.client import ClobClient
+        from py_clob_client.clob_types import ApiCreds
+        try:
+            from py_clob_client.constants import SignatureType as SignatureTypeV2
+        except ImportError:
+            from py_clob_client.clob_types import SignatureType as SignatureTypeV2
+        c = ClobClient(
+            host='https://clob.polymarket.com',
+            chain_id=137,
+            key=os.getenv('POLYMARKET_PRIVATE_KEY'),
+            creds=ApiCreds(
+                api_key=os.getenv('POLYMARKET_API_KEY'),
+                api_secret=os.getenv('POLYMARKET_API_SECRET'),
+                api_passphrase=os.getenv('POLYMARKET_API_PASSPHRASE'),
+            ),
+            signature_type=SignatureTypeV2.POLY_1271,
+            funder=os.getenv('POLYMARKET_FUNDER'),
+        )
+        result = c.get_balance_allowance(params={'asset_type': 'COLLATERAL'})
+        if isinstance(result, dict):
+            bal_raw = result.get('balance', '0')
+        else:
+            bal_raw = str(result)
+        return float(bal_raw) / 1_000_000
+    except Exception as e:
+        _log(f'Balance fetch failed: {e}')
+        return 0.0
+
 
 
 def _log(msg: str) -> None:
@@ -581,20 +619,49 @@ async def _process_market(session, market, now_ts):
     trade_result = await _place_trade(market, direction, shares, confidence)
     _log(f'Trade result: {trade_result}')
 
-    # Send Telegram alert ONLY if trade actually filled
+    # Send entry alert + schedule real-time outcome check (bot.py pattern)
     if trade_result and trade_result.get('success') and trade_result.get('status') == 'matched':
-        actual_shares = float(trade_result.get('takingAmount', shares))
+        actual_shares = int(float(trade_result.get('takingAmount', shares)))
         actual_cost   = float(trade_result.get('makingAmount', shares * crowd_price))
-        actual_price  = round(actual_cost / actual_shares, 4) if actual_shares else crowd_price
-        await send_message(
-            f'🟢 [bot2 {"DRY" if SAFE_MODE else "LIVE"}] {asset.upper()} {tf} {direction.upper()}\n'
-            f'{market["title"]}\n'
-            f'Filled: {actual_shares:.2f} shares @ ${actual_price:.4f}\n'
-            f'Cost: ${actual_cost:.2f}\n'
-            f'CL: ${cl_price:,.4f} ({cl_pct:+.4f}%)\n'
-            f'BN: ${bn_now:,.4f} ({bn_pct:+.4f}%)'
+        actual_price  = round(actual_cost / max(actual_shares, 1), 4) if actual_shares else crowd_price
+
+        await alert_entry(
+            market=market,
+            direction=direction,
+            shares=actual_shares,
+            price=actual_price,
+            confidence=confidence,
+            cl_pct=cl_pct,
+            bn_pct=bn_pct,
+            get_balance_fn=fetch_wallet_balance,
         )
 
+        # Build a bot2-specific outcome writeback callback
+        async def _bot2_outcome_writeback(condition_id, won, pnl, up_won, final_up_price, direction):
+            try:
+                async with aiohttp.ClientSession() as s:
+                    await db_update_signal_outcome(
+                        s,
+                        condition_id=condition_id,
+                        bot='bot2',
+                        direction=direction.upper(),
+                        outcome='WIN' if won else 'LOSS',
+                        up_won=up_won,
+                        pnl=pnl,
+                        final_up_price=final_up_price,
+                        final_down_price=1.0 - final_up_price if final_up_price else None,
+                    )
+            except Exception as e:
+                _log(f'bot2 outcome writeback failed: {e}')
+
+        schedule_outcome_check(
+            market=market,
+            direction=direction,
+            shares=actual_shares,
+            entry_price=actual_price,
+            get_balance_fn=fetch_wallet_balance,
+            update_outcome_fn=_bot2_outcome_writeback,
+        )
     # Log to CSV — for analysis (works in both DRY and LIVE modes)
     try:
         await log_bot2_signal(

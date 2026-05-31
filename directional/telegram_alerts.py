@@ -224,6 +224,7 @@ async def _resolve_outcome(
     shares: int,
     entry_price: float,
     get_balance_fn,
+    update_outcome_fn=None,
 ) -> None:
     """Wait until T+120s after close, then poll gamma until resolved or retries exhausted."""
     condition_id = market['condition_id']
@@ -281,18 +282,19 @@ async def _resolve_outcome(
                     final_down_price=down_final,
                     get_balance_fn=get_balance_fn,
                 )
-                try:
-                    from bot import update_signal_outcome
-                    await update_signal_outcome(
-                        condition_id=condition_id,
-                        won=won,
-                        pnl=pnl,
-                        up_won=up_won,
-                        final_up_price=up_final,
-                        direction=direction,
-                    )
-                except Exception as e:
-                    print(f'[Telegram] update_signal_outcome failed: {e}')
+                # Bot-specific writeback (passed via update_outcome_fn callback)
+                if update_outcome_fn:
+                    try:
+                        await update_outcome_fn(
+                            condition_id=condition_id,
+                            won=won,
+                            pnl=pnl,
+                            up_won=up_won,
+                            final_up_price=up_final,
+                            direction=direction,
+                        )
+                    except Exception as e:
+                        print(f'[Telegram] update_outcome_fn failed: {e}')
                 return
 
             # Not resolved — wait and retry
@@ -309,14 +311,17 @@ def schedule_outcome_check(
     shares: int,
     entry_price: float,
     get_balance_fn,
+    update_outcome_fn=None,
 ) -> None:
     """
     Schedule background polling for this market's outcome.
-
     Should be called immediately after a confirmed trade entry.
+    Pass update_outcome_fn=<async callable> to specify which bot's
+    writeback runs when the outcome resolves.
     """
     asyncio.create_task(
-        _resolve_outcome(market, direction, shares, entry_price, get_balance_fn)
+        _resolve_outcome(market, direction, shares, entry_price,
+                         get_balance_fn, update_outcome_fn)
     )
 
 
