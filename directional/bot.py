@@ -126,24 +126,25 @@ def log_execution_event(market: dict, direction: str, reason: str,
 def log_skipped_signal(market: dict, direction: str, confidence: float,
                        cl_pct: float, bn_pct: float, cl_price: float,
                        binance_price: float, skipped_price: float, reason: str):
-    """Persist a skipped signal so we can later resolve via gamma."""
+    """Persist a skipped signal so we can later analyze why it was skipped."""
     file_exists = Path(SKIPPED_LOG_FILE).exists()
+    fieldnames = [
+        'timestamp', 'market', 'end_time', 'timeframe', 'slug', 'condition_id',
+        'direction', 'confidence', 'cl_pct', 'bn_pct',
+        'cl_price', 'binance_price', 'skipped_price', 'reason',
+        'outcome', 'would_have_won', 'up_won',
+    ]
     with open(SKIPPED_LOG_FILE, 'a', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=[
-            'timestamp', 'market', 'end_time', 'timeframe', 'slug', 'condition_id',
-            'direction', 'entry_price', 'shares', 'cost', 'cl_pct', 'bn_pct',
-            'confidence', 'up_price', 'down_price',
-            'cl_price_at_signal', 'opening_cl_price', 'binance_at_signal',
-            'dry_run', 'outcome', 'resolution_cl_price', 'up_won'
-        ])
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         if not file_exists:
             writer.writeheader()
         writer.writerow({
             'timestamp':      datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
             'market':         market['title'],
-            'condition_id':   market['condition_id'],
             'end_time':       market['end_time'].strftime('%Y-%m-%d %H:%M:%S'),
-            'timeframe':      market.get('timeframe', '?'),
+            'timeframe':      market.get('timeframe', ''),
+            'slug':           market.get('slug', ''),
+            'condition_id':   market.get('condition_id', ''),
             'direction':      direction.upper(),
             'confidence':     round(confidence, 4),
             'cl_pct':         round(cl_pct, 4),
@@ -154,10 +155,7 @@ def log_skipped_signal(market: dict, direction: str, confidence: float,
             'reason':         reason,
             'outcome':        'PENDING',
             'would_have_won': '',
-            'timeframe':            market.get('timeframe', ''),
-            'slug':                 market.get('slug', ''),
-            'condition_id':         market.get('condition_id', ''),
-            'up_won':               '',
+            'up_won':         '',
         })
 
 
