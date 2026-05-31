@@ -39,6 +39,26 @@ SUPABASE_KEY = os.getenv('SUPABASE_SERVICE_KEY') or os.getenv('SUPABASE_KEY', ''
 GAMMA_URL    = 'https://gamma-api.polymarket.com/events'
 
 
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
+TELEGRAM_CHAT  = os.getenv('TELEGRAM_CHAT_ID', '')
+
+
+async def send_outcome_telegram(session, asset, tf, direction, emoji, word, pnl,
+                                final_up, final_down):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
+        return
+    text = (
+        f'{emoji} bot2 {word}: {asset} {tf} {direction.upper()}\n'
+        f'PnL: ${pnl:+.2f}\n'
+        f'Resolved UP: {final_up}\n'
+        f'Resolved DOWN: {final_down}'
+    )
+    url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
+    async with session.post(url, json={'chat_id': TELEGRAM_CHAT, 'text': text},
+                            timeout=aiohttp.ClientTimeout(total=10)) as r:
+        pass
+
+
 def _log(msg):
     print(f'[Resolver {datetime.now(timezone.utc).strftime("%H:%M:%S")}] {msg}', flush=True)
 
@@ -58,9 +78,10 @@ async def fetch_pending_bot2(session, limit, hours_back):
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours_back)).isoformat()
     cutoff_encoded = quote(cutoff, safe='')
     url = (f'{SUPABASE_URL}/rest/v1/signals'
-           f'?bot=eq.bot2&outcome=eq.PENDING'
-           f'&signal_timestamp=gte.{cutoff_encoded}'
-           f'&order=signal_timestamp.asc&limit={limit}')
+       f'?bot=eq.bot2&outcome=eq.PENDING'
+       f'&signal_timestamp=gte.{cutoff_encoded}'
+       f'&order=signal_timestamp.asc&limit={limit}'
+       f'&select=*')
     async with session.get(url, headers=_sb_headers()) as r:
         if r.status != 200:
             _log(f'Fetch HTTP {r.status}: {(await r.text())[:200]}')
@@ -200,6 +221,21 @@ async def main():
                 else:
                     stats[asset]['losses'] += 1
                 stats[asset]['pnl'] += pnl
+
+                # Send outcome alert via Telegram (only for live trades)
+                if r.get('safe_mode') is False and r.get('filled'):
+                    outcome_emoji = '✅' if won else '❌'
+                    outcome_word  = 'WIN' if won else 'LOSS'
+                    tf = r.get('timeframe', '?')
+                    direction = r.get('direction', '?')
+                    try:
+                        await send_outcome_telegram(
+                            session, asset, tf, direction,
+                            outcome_emoji, outcome_word, pnl,
+                            state['final_up_price'], state['final_down_price']
+                        )
+                    except Exception as e:
+                        _log(f'Outcome telegram failed: {e}')
 
             await asyncio.sleep(0.05)
 

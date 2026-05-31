@@ -544,17 +544,6 @@ async def _process_market(session, market, now_ts):
     bn_pct = (bn_now - bn_opening) / bn_opening * 100
     crowd_price = market['up_price'] if direction == 'up' else market['down_price']
 
-    msg = (
-        f'🔵 [bot2 {"DRY" if SAFE_MODE else "LIVE"}] [{asset.upper()} {tf}] signal\n'
-        f'{market["title"]}\n'
-        f'Direction: {direction.upper()}\n'
-        f'CL: ${cl_price:,.4f} (open ${opening_price:,.4f}) {cl_pct:+.4f}%\n'
-        f'BN: ${bn_now:,.4f} (open ${bn_opening:,.4f}) {bn_pct:+.4f}%\n'
-        f'Confidence: {confidence:.4f}%\n'
-        f'Crowd: {crowd_price}'
-    )
-    await send_message(msg)
-
     # Mark as traded BEFORE placing so we don't double-fire on the next poll
     _traded.add(cid)
 
@@ -591,6 +580,20 @@ async def _process_market(session, market, now_ts):
     # Place the trade (dry-run or real, decided inside _place_trade)
     trade_result = await _place_trade(market, direction, shares, confidence)
     _log(f'Trade result: {trade_result}')
+
+    # Send Telegram alert ONLY if trade actually filled
+    if trade_result and trade_result.get('success') and trade_result.get('status') == 'matched':
+        actual_shares = float(trade_result.get('takingAmount', shares))
+        actual_cost   = float(trade_result.get('makingAmount', shares * crowd_price))
+        actual_price  = round(actual_cost / actual_shares, 4) if actual_shares else crowd_price
+        await send_message(
+            f'🟢 [bot2 {"DRY" if SAFE_MODE else "LIVE"}] {asset.upper()} {tf} {direction.upper()}\n'
+            f'{market["title"]}\n'
+            f'Filled: {actual_shares:.2f} shares @ ${actual_price:.4f}\n'
+            f'Cost: ${actual_cost:.2f}\n'
+            f'CL: ${cl_price:,.4f} ({cl_pct:+.4f}%)\n'
+            f'BN: ${bn_now:,.4f} ({bn_pct:+.4f}%)'
+        )
 
     # Log to CSV — for analysis (works in both DRY and LIVE modes)
     try:
