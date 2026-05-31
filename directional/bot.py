@@ -213,7 +213,7 @@ async def log_signal(market: dict, direction: str, shares: int,
             'fill_tx':              '',
         })
 
-                # Also write to Supabase
+    # Also write to Supabase
     try:
         import aiohttp
         crowd_price = market['up_price'] if direction == 'up' else market['down_price']
