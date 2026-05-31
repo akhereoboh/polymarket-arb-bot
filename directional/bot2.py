@@ -426,6 +426,7 @@ async def _process_market(session, market, now_ts):
         _bn_history_by_asset[asset],
         _cl_history_by_asset[asset],
         seconds_left,
+        asset=asset,
     )
     if len(result) == 2:
         direction, confidence = result

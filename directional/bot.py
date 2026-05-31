@@ -444,7 +444,8 @@ def check_signal(cl_price: float, opening_price: float,
                  pyth_now: float | None, pyth_opening: float | None,
                  up_price: float, down_price: float,
                  btc_history: list, cl_history: list,
-                 seconds_left: float) -> tuple[str, float, str]:
+                 seconds_left: float,
+                 asset: str = 'BTC') -> tuple[str, float, str]:
 
     cl_pct = (cl_price - opening_price) / opening_price * 100
     bn_pct = (binance_now - binance_opening) / binance_opening * 100
@@ -545,12 +546,43 @@ def check_signal(cl_price: float, opening_price: float,
             elif direction == 'down' and pct < 0:
                 cl_confirmations += 1
 
-    total_confirmations = bn_confirmations + cl_confirmations
-    total_checks        = bn_checked + cl_checked
+    
+        # condition 7.5 — short term momentum confirmation on Pyth
+    # Use Pyth's history (same lookback windows as BN and CL)
+    pyth_confirmations = 0
+    pyth_checked       = 0
+
+    if pyth_now is not None:
+        # We need to query Pyth history. Import here to avoid circular issue.
+        from pyth_history import get_pyth_price_at_time
+
+        # NOTE: this requires knowing which asset we're scanning.
+        # bot.py only handles BTC, but check_signal doesn't currently know the asset.
+        # Same problem as before — we'll inject 'BTC' here and let bot2's
+        # caller override if needed (see refactor note below).
+        pyth_asset = asset.upper()
+
+        for lookback in timeframes:
+            target    = now_ts - lookback
+            ref_price = get_pyth_price_at_time(pyth_asset, target)
+            if ref_price:
+                pct = (pyth_now - ref_price) / ref_price * 100
+                pyth_checked += 1
+                if direction == 'up' and pct > 0:
+                    pyth_confirmations += 1
+                elif direction == 'down' and pct < 0:
+                    pyth_confirmations += 1
+
+
+    total_confirmations = bn_confirmations + cl_confirmations + pyth_confirmations
+    total_checks        = bn_checked + cl_checked + pyth_checked
 
     if total_checks >= 4:
         momentum_score = total_confirmations / total_checks
-        print(f'  → Momentum: {total_confirmations}/{total_checks} (BN:{bn_confirmations}/{bn_checked} CL:{cl_confirmations}/{cl_checked})')
+        print(f'  → Momentum: {total_confirmations}/{total_checks} '
+              f'(BN:{bn_confirmations}/{bn_checked} '
+              f'CL:{cl_confirmations}/{cl_checked} '
+              f'Pyth:{pyth_confirmations}/{pyth_checked})')
         if momentum_score < 0.5:
             print(f'  → Momentum against signal — skipping')
             return 'none', 0.0, ''
