@@ -97,17 +97,18 @@ async def place_gtc_fallback(
     asks = sorted(book['asks'], key=lambda x: float(x['price']))
     raw_price = market['up_price'] if direction == 'up' else market['down_price']
 
+    # Always compute seconds_left and thresholds — needed in both branches below
+    T_STAGE1_SEC = 10      # place at our price
+    T_STAGE2_SEC = 6       # override to best ask
+    T_MINUS_CANCEL_SEC = 3.5     # final cancel
+    seconds_left = (market['end_time'] - datetime.now(timezone.utc)).total_seconds()
+
     if not asks:
         # No asks on the book — post at reference + 0.05 and wait for sellers, capped at 0.85
         gtc_price = round(min(raw_price + 0.05, 0.85), 2)
         print(f'  [GTC] Order book has zero asks — posting at {gtc_price} (raw={raw_price})')
     else:
-        # thresholds
-        T_STAGE1_SEC = 10      # place at our price
-        T_STAGE2_SEC = 6       # override to best ask
-        T_MINUS_CANCEL_SEC = 3.5     # final cancel
         # We have asks on the book — use normal logic with sanity cap
-        seconds_left = (market['end_time'] - datetime.now(timezone.utc)).total_seconds()
 
         if seconds_left <= T_STAGE2_SEC:
             # Stage 2: override to best ask
