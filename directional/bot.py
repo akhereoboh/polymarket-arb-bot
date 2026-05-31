@@ -33,12 +33,26 @@ from py_clob_client_v2 import (
 )
 from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
 
+from pyth_history import (
+    start_pyth_feeder,
+    get_pyth_price_at_time,
+    get_latest_pyth_price,
+    history_age_seconds,
+)
+
+
 # ── config ──────────────────────────────────────────────
 DRY_RUN       = os.getenv('DRY_RUN', 'true').lower() == 'true'
 MIN_MOVE_PCT  = float(os.getenv('MIN_MOVE_PCT', '0.025'))  # minimum % move to trade
 TRADE_AMOUNT  = float(os.getenv('TRADE_AMOUNT', '4'))    # USD per trade
 RPC           = 'https://polygon-bor-rpc.publicnode.com'
 CL_CONTRACT   = '0xc907E116054Ad103354f2D350FD2514433D57F6f'
+
+
+
+PYTH_REQUIRED      = os.getenv('PYTH_REQUIRED', 'true').lower() == 'true'
+PYTH_POLL_INTERVAL = int(os.getenv('PYTH_POLL_INTERVAL', '5'))
+PYTH_MIN_HISTORY   = int(os.getenv('PYTH_MIN_HISTORY', '60'))
 
 
 # Early-entry mode config
@@ -427,6 +441,7 @@ async def get_active_btc_markets(session) -> list:
 
 def check_signal(cl_price: float, opening_price: float,
                  binance_now: float, binance_opening: float,
+                 pyth_now: float | None, pyth_opening: float | None,
                  up_price: float, down_price: float,
                  btc_history: list, cl_history: list,
                  seconds_left: float) -> tuple[str, float, str]:
@@ -434,10 +449,17 @@ def check_signal(cl_price: float, opening_price: float,
     cl_pct = (cl_price - opening_price) / opening_price * 100
     bn_pct = (binance_now - binance_opening) / binance_opening * 100
 
-    cl_up     = cl_pct > 0
-    bn_up     = bn_pct > 0
-    cl_strong = abs(cl_pct) >= MIN_MOVE_PCT
-    bn_strong = abs(bn_pct) >= MIN_MOVE_PCT
+    # Pyth pct only if both opening and now are available
+    pyth_pct = None
+    if pyth_now is not None and pyth_opening is not None and pyth_opening != 0:
+        pyth_pct = (pyth_now - pyth_opening) / pyth_opening * 100
+
+    cl_up      = cl_pct > 0
+    bn_up      = bn_pct > 0
+    cl_strong  = abs(cl_pct) >= MIN_MOVE_PCT
+    bn_strong  = abs(bn_pct) >= MIN_MOVE_PCT
+    pyth_up     = (pyth_pct > 0) if pyth_pct is not None else None
+    pyth_strong = (abs(pyth_pct) >= MIN_MOVE_PCT) if pyth_pct is not None else False
 
     # condition 1 — chainlink move must be strong enough
     if not cl_strong:
@@ -447,7 +469,22 @@ def check_signal(cl_price: float, opening_price: float,
     if not bn_strong:
         return 'none', 0.0, ''
 
-    # condition 3 — both must agree on direction
+    # condition 2.5 — Pyth confirmation (identical treatment to BN)
+    if pyth_pct is None:
+        # Pyth history not warm yet
+        if PYTH_REQUIRED:
+            print(f'  → Pyth data unavailable — skipping (PYTH_REQUIRED=true)')
+            return 'none', 0.0, ''
+        # else: fall through to CL+BN only logic
+    else:
+        if not pyth_strong:
+            print(f'  → Pyth not strong enough (Pyth:{pyth_pct:+.4f}%) — skipping')
+            return 'none', 0.0, ''
+        if pyth_up != cl_up:
+            print(f'  → Pyth disagrees on direction (CL:{cl_pct:+.4f}% Pyth:{pyth_pct:+.4f}%) — skipping')
+            return 'none', 0.0, ''
+
+    # condition 3 — CL and BN must agree on direction (Pyth handled above)
     if cl_up != bn_up:
         return 'none', 0.0, ''
 
@@ -801,17 +838,20 @@ async def market_scanner():
                         if ts <= target_ts:
                             bn_opening = px
                             break
-
                     if not bn_opening or not _btc_history:
                         print(f'[Signal] No Binance history yet')
                         continue
-
                     binance_now = _btc_history[-1][1]
 
-                    # check signal
+                    # get Pyth opening + now using same lookback window
+                    pyth_opening = get_pyth_price_at_time('BTC', target_ts)
+                    pyth_now     = get_latest_pyth_price('BTC')
+
+                    # check signal (Pyth is 3rd confirmation — passed alongside BN)
                     direction, confidence, momentum_info = check_signal(
                         cl_price, opening_price,
                         binance_now, bn_opening,
+                        pyth_now, pyth_opening,
                         market['up_price'], market['down_price'],
                         _btc_history, _cl_history,
                         seconds_left
@@ -922,6 +962,15 @@ async def _on_gtc_fill(market: dict, fill_info: dict) -> None:
 async def main():
     set_on_fill_callback(_on_gtc_fill)
     await start_command_listener()
+
+    # Start Pyth Network feeder for BTC (3rd confirmation source)
+    start_pyth_feeder(
+        asyncio.get_event_loop(),
+        ['BTC'],
+        poll_interval=PYTH_POLL_INTERVAL,
+    )
+    print(f'[Bot] Pyth feeder started for BTC | poll={PYTH_POLL_INTERVAL}s | required={PYTH_REQUIRED}')
+
     await asyncio.gather(
         price_monitor(),
         market_scanner(),

@@ -52,6 +52,12 @@ import crypto_assets as ca
 import csv
 from pathlib import Path
 
+from pyth_history import (
+    start_pyth_feeder,
+    get_pyth_price_at_time,
+    get_latest_pyth_price,
+)
+
 BOT2_LOG_FILE = os.path.join(_HERE, 'bot2_signals_log.csv')
 
 # ─── config ──────────────────────────────────────────────────────────────
@@ -406,9 +412,16 @@ async def _process_market(session, market, now_ts):
     bn_now = bn_hist[-1][1]
 
     # Signal check (handle bot.py's inconsistent return)
+    # Pyth opening + now for THIS asset (matches CL/BN lookback)
+    lookback = 900 if tf == '15m' else 300
+    target_ts = now_ts - lookback
+    pyth_opening = get_pyth_price_at_time(asset.upper(), target_ts)
+    pyth_now     = get_latest_pyth_price(asset.upper())
+
     result = check_signal(
         cl_price, opening_price,
         bn_now, bn_opening,
+        pyth_now, pyth_opening,
         market['up_price'], market['down_price'],
         _bn_history_by_asset[asset],
         _cl_history_by_asset[asset],
@@ -485,6 +498,15 @@ async def main():
     try:
         feeders = [asyncio.create_task(_binance_feeder(a)) for a in ASSETS_TO_SCAN]
         scanner = asyncio.create_task(market_scanner())
+
+        # Start Pyth Network feeder for all bot2 assets (3rd confirmation source)
+        start_pyth_feeder(
+            asyncio.get_event_loop(),
+            [a.upper() for a in ASSETS_TO_SCAN],
+            poll_interval=int(os.getenv('PYTH_POLL_INTERVAL', '5')),
+        )
+        _log(f'Pyth feeder started for {ASSETS_TO_SCAN}')
+
         await asyncio.gather(scanner, *feeders)
     except KeyboardInterrupt:
         _log('Stopped by keyboard interrupt')
