@@ -288,7 +288,7 @@ async def _resolve_outcome(
                         won=won,
                         pnl=pnl,
                         up_won=up_won,
-                        final_up_price=final_up_price,
+                        final_up_price=up_final,
                         direction=direction,
                     )
                 except Exception as e:
