@@ -577,7 +577,7 @@ async def _process_market(session, market, now_ts):
     )
 
 
-    # Place the trade (dry-run or real, decided inside _place_trade)
+# Place the trade (dry-run or real, decided inside _place_trade)
     trade_result = await _place_trade(market, direction, shares, confidence)
     _log(f'Trade result: {trade_result}')
 

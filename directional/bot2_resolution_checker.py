@@ -43,15 +43,49 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT  = os.getenv('TELEGRAM_CHAT_ID', '')
 
 
+async def fetch_wallet_balance() -> float:
+    """Fetch current USDC balance from Polymarket. Returns 0 on error."""
+    try:
+        from py_clob_client.client import ClobClient
+        from py_clob_client.clob_types import ApiCreds
+        try:
+            from py_clob_client.constants import SignatureType as SignatureTypeV2
+        except ImportError:
+            from py_clob_client.clob_types import SignatureType as SignatureTypeV2
+        c = ClobClient(
+            host='https://clob.polymarket.com',
+            chain_id=137,
+            key=os.getenv('POLYMARKET_PRIVATE_KEY'),
+            creds=ApiCreds(
+                api_key=os.getenv('POLYMARKET_API_KEY'),
+                api_secret=os.getenv('POLYMARKET_API_SECRET'),
+                api_passphrase=os.getenv('POLYMARKET_API_PASSPHRASE'),
+            ),
+            signature_type=SignatureTypeV2.POLY_1271,
+            funder=os.getenv('POLYMARKET_FUNDER'),
+        )
+        result = c.get_balance_allowance(params={'asset_type': 'COLLATERAL'})
+        if isinstance(result, dict):
+            bal_raw = result.get('balance', '0')
+        else:
+            bal_raw = str(result)
+        return float(bal_raw) / 1_000_000
+    except Exception as e:
+        _log(f'Balance fetch failed: {e}')
+        return 0.0
+
+
 async def send_outcome_telegram(session, asset, tf, direction, emoji, word, pnl,
-                                final_up, final_down):
+                                final_up, final_down, balance):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
         return
     text = (
         f'{emoji} bot2 {word}: {asset} {tf} {direction.upper()}\n'
         f'PnL: ${pnl:+.2f}\n'
         f'Resolved UP: {final_up}\n'
-        f'Resolved DOWN: {final_down}'
+        f'Resolved DOWN: {final_down}\n'
+        f'\n'
+        f'Account balance: ${balance:.2f}'
     )
     url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
     async with session.post(url, json={'chat_id': TELEGRAM_CHAT, 'text': text},
@@ -168,6 +202,8 @@ async def main():
     _log(f'Fetching up to {args.limit} pending bot2 signals from last {args.hours}h...')
 
     async with aiohttp.ClientSession() as session:
+        wallet_balance = await fetch_wallet_balance()
+        _log(f'Wallet balance: ${wallet_balance:.2f}')
         rows = await fetch_pending_bot2(session, args.limit, args.hours)
         if not rows:
             _log('No pending signals')
@@ -232,7 +268,8 @@ async def main():
                         await send_outcome_telegram(
                             session, asset, tf, direction,
                             outcome_emoji, outcome_word, pnl,
-                            state['final_up_price'], state['final_down_price']
+                            state['final_up_price'], state['final_down_price'],
+                            wallet_balance,
                         )
                     except Exception as e:
                         _log(f'Outcome telegram failed: {e}')
