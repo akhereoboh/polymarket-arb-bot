@@ -54,10 +54,12 @@ def _sb_headers(prefer='return=representation'):
 
 async def fetch_pending_bot2(session, limit, hours_back):
     """Get pending bot2 signals from Supabase."""
+    from urllib.parse import quote
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours_back)).isoformat()
+    cutoff_encoded = quote(cutoff, safe='')
     url = (f'{SUPABASE_URL}/rest/v1/signals'
            f'?bot=eq.bot2&outcome=eq.PENDING'
-           f'&signal_timestamp=gte.{cutoff}'
+           f'&signal_timestamp=gte.{cutoff_encoded}'
            f'&order=signal_timestamp.asc&limit={limit}')
     async with session.get(url, headers=_sb_headers()) as r:
         if r.status != 200:
