@@ -25,6 +25,16 @@ from gtc_fallback import (
 )
 
 
+
+from signals_db import (
+    insert_signal as db_insert_signal,
+    update_signal_outcome as db_update_signal_outcome,
+    update_signal_fill as db_update_signal_fill,
+    build_signal_row,
+)
+
+
+
 sys.path.insert(0, '/root/my-clob-client')
 
 from py_clob_client_v2 import (
@@ -151,9 +161,9 @@ def log_skipped_signal(market: dict, direction: str, confidence: float,
         })
 
 
-def log_signal(market: dict, direction: str, shares: int,
-               cl_pct: float, bn_pct: float, confidence: float,
-               cl_price: float, opening_price: float, binance_price: float):
+async def log_signal(market: dict, direction: str, shares: int,
+                     cl_pct: float, bn_pct: float, confidence: float,
+                     cl_price: float, opening_price: float, binance_price: float):
     """Write a PENDING signal row to signals_log.csv with all 27 columns."""
     file_exists = Path(LOG_FILE).exists()
     fieldnames = [
@@ -202,7 +212,37 @@ def log_signal(market: dict, direction: str, shares: int,
             'fill_pnl':             '',
             'fill_tx':              '',
         })
+
+                # Also write to Supabase
+    try:
+        import aiohttp
+        crowd_price = market['up_price'] if direction == 'up' else market['down_price']
+        max_fill_price = round(min(crowd_price + 0.05, 0.995), 2)
+        row = build_signal_row(
+            bot='bot1',
+            asset='BTC',
+            timeframe=market.get('timeframe', '5m'),
+            market=market,
+            direction=direction,
+            cl_price=cl_price,
+            opening_cl=opening_price,
+            bn_price=binance_price,
+            opening_bn=binance_price,  # NOTE: we don't have bn_opening here cleanly; using binance_price as proxy
+            confidence=confidence,
+            intended_shares=shares,
+            max_fill_price=max_fill_price,
+            crowd_price=crowd_price,
+            safe_mode=DRY_RUN,
+            trade_status='PENDING',
+        )
+        async with aiohttp.ClientSession() as session:
+            await db_insert_signal(session, row)
+    except Exception as e:
+        print(f'[Log] Supabase insert failed: {e}')
+
     print(f'[Log] Signal logged to {LOG_FILE}')
+
+
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -210,7 +250,7 @@ def log_signal(market: dict, direction: str, shares: int,
 # (place it right below log_signal, around line 180)
 # ═══════════════════════════════════════════════════════════════════════
 
-def update_signal_outcome(
+async def update_signal_outcome(
     condition_id: str,
     won: bool,
     pnl: float,
@@ -219,6 +259,7 @@ def update_signal_outcome(
     fill_price: float | None = None,
     fill_size: int | None = None,
     fill_tx: str | None = None,
+    direction: str = 'UP',
 ):
     """
     Update an existing signal row in signals_log.csv with resolution data.
@@ -265,46 +306,82 @@ def update_signal_outcome(
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+    
+        # Also update Supabase
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            await db_update_signal_outcome(
+                session,
+                condition_id=condition_id,
+                bot='bot1',
+                direction=direction.upper(),
+                outcome='WIN' if won else 'LOSS',
+                up_won=up_won,
+                pnl=pnl,
+                final_up_price=final_up_price,
+                final_down_price=1.0 - final_up_price if final_up_price else None,
+            )
+    except Exception as e:
+        print(f'[Log] Supabase outcome update failed: {e}')
+
+        
 
     print(f'[Log] Updated signal outcome for cid={condition_id[:10]} → '
           f'{"WIN" if won else "LOSS"} ${pnl:+.2f}')
 
 
-def update_signal_fill(
+async def update_signal_fill(
     condition_id: str,
     fill_price: float,
     fill_size: int,
     fill_tx: str = '',
+    direction: str = 'UP',
+    fill_method: str = 'fak',
 ):
     """
     Update an existing signal row to mark it as filled (called after FAK/GTC fills).
-    Separate from outcome update because filling happens BEFORE resolution.
+    Dual-writes CSV + Supabase.
     """
-    if not Path(LOG_FILE).exists():
-        return
+    # ── CSV update (existing behavior) ──
+    if Path(LOG_FILE).exists():
+        with open(LOG_FILE, 'r', newline='') as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames
+            rows = list(reader)
 
-    with open(LOG_FILE, 'r', newline='') as f:
-        reader = csv.DictReader(f)
-        fieldnames = reader.fieldnames
-        rows = list(reader)
+        updated = False
+        for row in reversed(rows):
+            if row.get('condition_id') == condition_id and not row.get('filled'):
+                row['filled'] = 'True'
+                row['fill_price'] = round(float(fill_price), 4)
+                row['fill_size'] = int(fill_size)
+                row['fill_tx'] = fill_tx
+                updated = True
+                break
 
-    updated = False
-    for row in reversed(rows):
-        if row.get('condition_id') == condition_id and not row.get('filled'):
-            row['filled'] = 'True'
-            row['fill_price'] = round(float(fill_price), 4)
-            row['fill_size'] = int(fill_size)
-            row['fill_tx'] = fill_tx
-            updated = True
-            break
+        if updated:
+            with open(LOG_FILE, 'w', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(rows)
 
-    if not updated:
-        return
-
-    with open(LOG_FILE, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    # ── Supabase update ──
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            await db_update_signal_fill(
+                session,
+                condition_id=condition_id,
+                bot='bot1',
+                direction=direction.upper(),
+                fill_method=fill_method,
+                fill_price=fill_price,
+                fill_size=fill_size,
+                fill_tx=fill_tx,
+            )
+    except Exception as e:
+        print(f'[Log] Supabase fill update failed: {e}')
 
 
 def get_client():
@@ -939,7 +1016,7 @@ async def market_scanner():
                         'bn_pct': bn_pct,
                     }
                     _traded.add(cid)
-                    log_signal(market, direction, shares, cl_pct, bn_pct, confidence,
+                    await log_signal(market, direction, shares, cl_pct, bn_pct, confidence,
                                cl_price, _opening_prices[cid], _btc_history[-1][1])
                     bal_before = await get_balance()
                     trade_result = await place_trade(market, direction, shares, confidence, early_mode=early_mode)
