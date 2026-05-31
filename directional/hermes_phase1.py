@@ -333,14 +333,14 @@ Critical guidance:
 When you DO suggest a change, you MUST use this exact JSON format at the end of your response:
 
 ```json
-{
-  "suggested_change": {
+{{
+  "suggested_change": {{
     "key": "MIN_MOVE_PCT",
     "old_val": "0.025",
     "new_val": "0.035",
     "reasoning": "Brief explanation (1-2 sentences) of why this change, what pattern it addresses."
-  }
-}
+  }}
+}}
 ```
 
 Allowed keys (whitelist — ONLY these can be suggested):
