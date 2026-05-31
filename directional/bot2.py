@@ -75,7 +75,7 @@ ASSETS_TO_SCAN   = [a for a in ASSETS_TO_SCAN
 TRADE_AMOUNT     = float(os.getenv('BOT2_TRADE_AMOUNT', '1'))
 HARD_FILL_CAP    = float(os.getenv('BOT2_HARD_FILL_CAP', '0.995'))
 POLL_INTERVAL    = int(os.getenv('BOT2_POLL_INTERVAL', '5'))
-FAK_BUFFER       = 0.05  # how far above raw_price we'll FAK
+FAK_BUFFER = float(os.getenv('BOT2_FAK_BUFFER', '0.15'))
 
 
 # ─── state ───────────────────────────────────────────────────────────────
