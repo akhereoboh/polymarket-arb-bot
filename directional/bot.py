@@ -792,6 +792,18 @@ async def place_trade(market: dict, direction: str,
                                 attempted_price=price,
                                 best_ask=best_ask,
                                 extra=f'shares={shares_filled}')
+            # Update signal row with fill data
+            try:
+                await update_signal_fill(
+                    condition_id=market['condition_id'],
+                    fill_price=price,
+                    fill_size=shares_filled,
+                    fill_tx=str(result.get('orderID', '')) if isinstance(result, dict) else '',
+                    direction=direction.upper(),
+                    fill_method='fak',
+                )
+            except Exception as e:
+                print(f'  [Log] update_signal_fill (fak) failed: {e}')
             return result
 
         # FAK didn't fill — log it
@@ -1048,17 +1060,26 @@ async def _on_gtc_fill(market: dict, fill_info: dict) -> None:
     """Called by gtc_fallback when a GTC fills. Fires Telegram alert + outcome tracking."""
     cid = market['condition_id']
     _traded.add(cid)
-
     direction = fill_info['direction']
     shares = fill_info['shares']
     fill_price = fill_info['price']
-
+    # Update signal row with fill data
+    try:
+        await update_signal_fill(
+            condition_id=cid,
+            fill_price=fill_price,
+            fill_size=shares,
+            fill_tx=fill_info.get('orderID', ''),
+            direction=direction.upper(),
+            fill_method='gtc',
+        )
+    except Exception as e:
+        print(f'  [Log] update_signal_fill (gtc) failed: {e}')
     # Pull the signal context stashed at trade time
     meta = _signal_context.pop(cid, {})
     confidence = meta.get('confidence', 0)
     cl_pct = meta.get('cl_pct', 0)
     bn_pct = meta.get('bn_pct', 0)
-
     await alert_entry(
         market, direction, shares, fill_price,
         confidence, cl_pct, bn_pct, get_balance,
