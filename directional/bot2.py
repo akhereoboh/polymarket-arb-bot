@@ -58,6 +58,9 @@ from pyth_history import (
     get_latest_pyth_price,
 )
 
+from signals_db import insert_signal as db_insert_signal, build_signal_row
+
+
 BOT2_LOG_FILE = os.path.join(_HERE, 'bot2_signals_log.csv')
 
 # ─── config ──────────────────────────────────────────────────────────────
@@ -87,7 +90,7 @@ def _log(msg: str) -> None:
     print(f'[bot2 {datetime.now(timezone.utc).strftime("%H:%M:%S")}] {msg}', flush=True)
 
 
-def log_bot2_signal(
+async def log_bot2_signal(
     market: dict,
     direction: str,
     confidence: float,
@@ -161,6 +164,46 @@ def log_bot2_signal(
             'fill_pnl':        '',
             'fill_tx':         '',
         })
+
+    # Also write to Supabase
+    try:
+        import aiohttp
+        timeframe = market.get('timeframe', '?')
+        asset = market.get('asset', '?')
+        crowd_price = market['up_price'] if direction == 'up' else market['down_price']
+        
+        # Determine trade_status text
+        if trade_result and trade_result.get('status') == 'dry_run':
+            trade_status_text = 'DRY_RUN'
+        elif trade_result and trade_result.get('status') == 'error':
+            trade_status_text = f'ERROR: {str(trade_result.get("error", ""))[:50]}'
+        elif trade_result and trade_result.get('orderID'):
+            trade_status_text = 'PLACED'
+        else:
+            trade_status_text = 'UNKNOWN'
+        
+        row = build_signal_row(
+            bot='bot2',
+            asset=asset,
+            timeframe=timeframe,
+            market=market,
+            direction=direction,
+            cl_price=cl_price,
+            opening_cl=opening_cl,
+            bn_price=bn_price,
+            opening_bn=opening_bn,
+            confidence=confidence,
+            intended_shares=shares,
+            max_fill_price=max_fill_price,
+            crowd_price=crowd_price,
+            asks_at_cap=asks_at_cap,
+            safe_mode=safe_mode,
+            trade_status=trade_status_text,
+        )
+        async with aiohttp.ClientSession() as session:
+            await db_insert_signal(session, row)
+    except Exception as e:
+        _log(f'Supabase signal write failed: {e}')
 
 
 
@@ -476,7 +519,7 @@ async def _process_market(session, market, now_ts):
 
     # Log to CSV — for analysis (works in both DRY and LIVE modes)
     try:
-        log_bot2_signal(
+        await log_bot2_signal(
             market=market,
             direction=direction,
             confidence=confidence,
