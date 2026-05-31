@@ -38,8 +38,8 @@ load_dotenv(os.path.join(_HERE, '.env'))
 # ─── Config ──────────────────────────────────────────────────────────────
 BOT1_LOG       = os.path.join(_HERE, 'signals_log.csv')
 BOT2_LOG       = os.path.join(_HERE, 'bot2_signals_log.csv')
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
-TELEGRAM_CHAT  = os.getenv('TELEGRAM_CHAT_ID', '')
+TELEGRAM_TOKEN = os.getenv('POLY_HERMES_TELEGRAM_BOT_TOKEN', '')
+TELEGRAM_CHAT  = os.getenv('POLY_HERMES_TELEGRAM_BOT_CHATID', '')
 ANTHROPIC_KEY  = os.getenv('ANTHROPIC_API_KEY', '')
 ANTHROPIC_URL  = 'https://api.anthropic.com/v1/messages'
 MODEL          = 'claude-sonnet-4-20250514'

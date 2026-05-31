@@ -37,8 +37,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_HERE, '.env'))
 
 # ─── Config ──────────────────────────────────────────────────────────────
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
-TELEGRAM_CHAT  = os.getenv('TELEGRAM_CHAT_ID', '')
+TELEGRAM_TOKEN = os.getenv('POLY_HERMES_TELEGRAM_BOT_TOKEN', '')
+TELEGRAM_CHAT  = os.getenv('POLY_HERMES_TELEGRAM_BOT_CHATID', '')
 SUPABASE_URL   = os.getenv('SUPABASE_URL', '').rstrip('/')
 SUPABASE_KEY   = os.getenv('SUPABASE_SERVICE_KEY') or os.getenv('SUPABASE_KEY', '')
 ENV_FILE       = os.path.join(_HERE, '.env')

@@ -17,8 +17,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))
 from telegram_alerts import send_message  # noqa: E402
 
-BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
-CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
+BOT_TOKEN = os.getenv('POLY_WATCHER_TELEGRAM_BOT_TOKEN', '')
+CHAT_ID = os.getenv('POLY_WATCHER_TELEGRAM_BOT_CHATID', '')
 API_BASE = f'https://api.telegram.org/bot{BOT_TOKEN}'
 
 SERVICE_NAME = 'polybot-watcher'
