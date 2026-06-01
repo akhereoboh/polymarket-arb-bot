@@ -69,6 +69,7 @@ async def fetch_wallet_balance() -> float:
         _log(f'Balance fetch failed: {e}')
         return 0.0
 
+
 async def send_outcome_telegram(session, asset, tf, direction, emoji, word, pnl,
                                 final_up, final_down, balance):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
