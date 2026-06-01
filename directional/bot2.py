@@ -93,30 +93,25 @@ _traded: set[str] = set()
 async def fetch_wallet_balance() -> float:
     """Fetch current USDC balance from Polymarket. Returns 0 on error."""
     try:
-        from py_clob_client.client import ClobClient
-        from py_clob_client.clob_types import ApiCreds
-        try:
-            from py_clob_client.constants import SignatureType as SignatureTypeV2
-        except ImportError:
-            from py_clob_client.clob_types import SignatureType as SignatureTypeV2
+        from py_clob_client_v2 import ClobClient, SignatureTypeV2, ApiCreds
+        from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
+        creds = ApiCreds(
+            api_key=os.getenv('POLYMARKET_API_KEY'),
+            api_secret=os.getenv('POLYMARKET_API_SECRET'),
+            api_passphrase=os.getenv('POLYMARKET_API_PASSPHRASE'),
+        )
         c = ClobClient(
             host='https://clob.polymarket.com',
             chain_id=137,
             key=os.getenv('POLYMARKET_PRIVATE_KEY'),
-            creds=ApiCreds(
-                api_key=os.getenv('POLYMARKET_API_KEY'),
-                api_secret=os.getenv('POLYMARKET_API_SECRET'),
-                api_passphrase=os.getenv('POLYMARKET_API_PASSPHRASE'),
-            ),
+            creds=creds,
             signature_type=SignatureTypeV2.POLY_1271,
             funder=os.getenv('POLYMARKET_FUNDER'),
         )
-        result = c.get_balance_allowance(params={'asset_type': 'COLLATERAL'})
-        if isinstance(result, dict):
-            bal_raw = result.get('balance', '0')
-        else:
-            bal_raw = str(result)
-        return float(bal_raw) / 1_000_000
+        bal = c.get_balance_allowance(
+            BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=3)
+        )
+        return int(bal.get('balance', 0)) / 1_000_000
     except Exception as e:
         _log(f'Balance fetch failed: {e}')
         return 0.0
