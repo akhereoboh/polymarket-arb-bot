@@ -56,10 +56,7 @@ GAMMA_EVENTS = 'https://gamma-api.polymarket.com/events'
 # Each entry: (label, proxy_wallet_address)
 TRACKED_WALLETS: list[tuple[str, str]] = [
     ('chiiwawinha', '0x1bcb16ab3595079a8a8f0d35a475a3b71bc0b05a'),
-    # ('badb9af', '0xbadb9af986ee66437bd39e6cd3d3036cbbdc31a7'),
-    # ("Weatherstappen", "0xb9012e0d9b60d3920286309328b935cdfa609fc4"),
-    # ("0X3572", "0x886602e27ed4f86b2b6644fdef09074ed4ee7fc8"),
-    # ("helldfkdsf for esports", "0x62c30b6624cb51121cb7059b3b8853283bb6bfc9")
+    ("Lorenzo2K", "0xf0fe2332c12a186e6bff4e994c8623b7e3411538")
 ]
 
 # Subset of TRACKED_WALLETS we copy-trade from (when COPY_TRADE_ENABLED=true)
