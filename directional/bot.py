@@ -70,7 +70,7 @@ EARLY_ENTRY_WINDOW_15M = 300      # seconds before close
 EARLY_ENTRY_WINDOW_5M  = 90
 EARLY_MIN_CONFIDENCE   = 0.05
 EARLY_MIN_MOMENTUM     = 5
-EARLY_MIN_CL_MOVE_PCT  = 0.07
+EARLY_MIN_CL_MOVE_PCT  = 0.03
 EARLY_FAK_BUFFER       = 0.15
 EARLY_GTC_BUFFER       = 0.20
 HARD_FILL_CAP          = 0.995
@@ -929,16 +929,12 @@ async def market_scanner():
                         continue
 
                     opening_price = _opening_prices[cid]
-
-                    # entry window: 120s for 15m, 60s for 5m
-                    # Two entry windows now: early (strict criteria) and normal
-                    normal_window = 120 if tf == '15m' else 60
+                    # Backtest (May 30) showed T-60/T-120 entries LOSE money on 15m markets.
+                    # T-240s+ entries are profitable. So we disable the normal window entirely
+                    # and force every entry through the early-mode quality filter.
                     early_window = EARLY_ENTRY_WINDOW_15M if tf == '15m' else EARLY_ENTRY_WINDOW_5M
-
-                    in_normal_window = seconds_left <= normal_window
-                    in_early_window = (not in_normal_window) and seconds_left <= early_window
-                    early_mode = in_early_window  # set flag for downstream
-
+                    in_early_window = seconds_left <= early_window
+                    early_mode = True  # always require early-mode quality (momentum, conf, cl_move)
                     if seconds_left > early_window:
                         cl_pct = (cl_price - opening_price) / opening_price * 100
                         print(
