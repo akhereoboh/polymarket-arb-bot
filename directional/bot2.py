@@ -83,6 +83,15 @@ POLL_INTERVAL    = int(os.getenv('BOT2_POLL_INTERVAL', '5'))
 FAK_BUFFER = float(os.getenv('BOT2_FAK_BUFFER', '0.15'))
 
 
+# Dual-window strategy (matches bot.py — fires at both T-240s early AND T-60s normal,
+# tagged via entry_window column so we can analyze which performs better)
+EARLY_ENTRY_WINDOW_15M = 300   # seconds before close
+EARLY_ENTRY_WINDOW_5M  = 90
+EARLY_MIN_CONFIDENCE   = 0.05
+EARLY_MIN_MOMENTUM     = 5
+EARLY_MIN_CL_MOVE_PCT  = 0.03
+
+
 # ─── state ───────────────────────────────────────────────────────────────
 _bn_history_by_asset: dict[str, list[tuple[float, float]]] = {a: [] for a in ASSETS_TO_SCAN}
 _cl_history_by_asset: dict[str, list[tuple[float, float]]] = {a: [] for a in ASSETS_TO_SCAN}
@@ -530,11 +539,20 @@ async def _process_market(session, market, now_ts):
         return
 
     opening_price = _opening_prices[cid]
-
-    # Entry window matches bot.py
+    # Dual-window strategy: fire at BOTH early (T-240s for 15m, T-90s for 5m)
+    # AND normal (T-120s for 15m, T-60s for 5m) windows. Tag each fire with
+    # entry_window so we can analyze which performs better.
     normal_window = 120 if tf == '15m' else 60
-    if seconds_left > normal_window:
-        return
+    early_window  = EARLY_ENTRY_WINDOW_15M if tf == '15m' else EARLY_ENTRY_WINDOW_5M
+    
+    in_normal_window = seconds_left <= normal_window
+    in_early_window  = (seconds_left <= early_window) and (seconds_left > normal_window)
+    
+    if not (in_normal_window or in_early_window):
+        return  # still too far from close
+    
+    early_mode = in_early_window
+    entry_window = 'early' if in_early_window else 'normal'
 
     # Need Binance opening price
     lookback = 900 if tf == '15m' else 300
