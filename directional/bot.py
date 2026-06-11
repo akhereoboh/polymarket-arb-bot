@@ -929,13 +929,17 @@ async def market_scanner():
                         continue
 
                     opening_price = _opening_prices[cid]
-                    # Backtest (May 30) showed T-60/T-120 entries LOSE money on 15m markets.
-                    # T-240s+ entries are profitable. So we disable the normal window entirely
-                    # and force every entry through the early-mode quality filter.
+                    # Dual-window strategy: fire at BOTH T-240s (early) and T-60s (normal)
+                    # so we can A/B test which entry time works better. Each fired signal
+                    # gets tagged with entry_window so we can split-analyze later.
+                    normal_window = 120 if tf == '15m' else 60
                     early_window = EARLY_ENTRY_WINDOW_15M if tf == '15m' else EARLY_ENTRY_WINDOW_5M
-                    in_early_window = seconds_left <= early_window
-                    early_mode = True  # always require early-mode quality (momentum, conf, cl_move)
-                    if seconds_left > early_window:
+
+                    in_normal_window = seconds_left <= normal_window
+                    in_early_window = (seconds_left <= early_window) and (seconds_left > normal_window)
+
+                    if not (in_normal_window or in_early_window):
+                        # Still too far out from close — just monitor and continue
                         cl_pct = (cl_price - opening_price) / opening_price * 100
                         print(
                             f'[Monitor] [{tf}] {market["title"][:40]} | '
@@ -944,6 +948,9 @@ async def market_scanner():
                             f'UP:{market["up_price"]} DOWN:{market["down_price"]} Vol:${market["volume"]:.0f}'
                         )
                         continue
+
+                    early_mode = in_early_window  # quality filter applied only in early window
+                    entry_window = 'early' if in_early_window else 'normal'
 
                     # get binance opening price (matches market window)
                     lookback   = 900 if tf == '15m' else 300
