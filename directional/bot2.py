@@ -589,10 +589,24 @@ async def _process_market(session, market, now_ts):
 
     if direction == 'none':
         return
-
     # Build signal alert
     cl_pct = (cl_price - opening_price) / opening_price * 100
     bn_pct = (bn_now - bn_opening) / bn_opening * 100
+    
+    # Early-mode quality filter (matches bot.py — only fire early on strong signals)
+    if early_mode and momentum_info is not None:
+        momentum_ok = momentum_info.get('total_score', 0) >= EARLY_MIN_MOMENTUM
+        confidence_ok = confidence >= EARLY_MIN_CONFIDENCE
+        cl_strong = abs(cl_pct) >= EARLY_MIN_CL_MOVE_PCT
+        if not (momentum_ok and confidence_ok and cl_strong):
+            _log(
+                f'[{asset.upper()} {tf}] Early-entry rejected: '
+                f'mom={momentum_info.get("total_score", 0)}/12 (need >= {EARLY_MIN_MOMENTUM}), '
+                f'conf={confidence:.4f} (need >= {EARLY_MIN_CONFIDENCE}), '
+                f'cl_move={abs(cl_pct):.4f}% (need >= {EARLY_MIN_CL_MOVE_PCT}%)'
+            )
+            return
+        _log(f'[{asset.upper()} {tf}] EARLY ENTRY (mom={momentum_info["total_score"]}/12 conf={confidence:.4f} cl={cl_pct:+.4f}%)')
     crowd_price = market['up_price'] if direction == 'up' else market['down_price']
 
     # Mark as traded BEFORE placing so we don't double-fire on the next poll
