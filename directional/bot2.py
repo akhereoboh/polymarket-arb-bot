@@ -143,6 +143,7 @@ async def insert_signal_pretrade(
     max_fill_price: float,
     asks_at_cap: int,
     safe_mode: bool,
+    entry_window: str = 'normal',
 ):
     """Insert PENDING signal row to Supabase BEFORE _place_trade.
     
@@ -167,6 +168,7 @@ async def insert_signal_pretrade(
         asks_at_cap=asks_at_cap,
         safe_mode=safe_mode,
         trade_status='PENDING',
+        entry_window=entry_window,
     )
     try:
         async with aiohttp.ClientSession() as session:
@@ -189,6 +191,7 @@ async def log_bot2_signal(
     asks_at_cap: int,
     safe_mode: bool,
     trade_result: dict | None = None,
+    entry_window: str = 'normal',
 ):
     """Append a complete signal row to bot2_signals_log.csv."""
     file_exists = Path(BOT2_LOG_FILE).exists()
@@ -285,6 +288,7 @@ async def log_bot2_signal(
             asks_at_cap=asks_at_cap,
             safe_mode=safe_mode,
             trade_status=trade_status_text,
+            entry_window=entry_window,
         )
         async with aiohttp.ClientSession() as session:
             await db_insert_signal(session, row)
@@ -522,7 +526,9 @@ async def _process_market(session, market, now_ts):
     seconds_left = market['seconds_left']
     end_time = market['end_time']
     tf = market['timeframe']
-
+    # 15m markets disabled — backtest shows they lose money for both bot1 and bot2
+    if tf == '15m':
+        return
     cl_hist = _cl_history_by_asset.get(asset, [])
     if not cl_hist:
         return
@@ -639,6 +645,7 @@ async def _process_market(session, market, now_ts):
         max_fill_price=max_fill_price,
         asks_at_cap=asks_at_cap,
         safe_mode=SAFE_MODE,
+        entry_window=entry_window,
     )
 
 
@@ -704,6 +711,7 @@ async def _process_market(session, market, now_ts):
             asks_at_cap=asks_at_cap,
             safe_mode=SAFE_MODE,
             trade_result=trade_result,
+            entry_window=entry_window,
         )
     except Exception as e:
         _log(f'CSV log error: {e}')
