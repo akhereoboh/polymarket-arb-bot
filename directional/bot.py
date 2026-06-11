@@ -471,7 +471,7 @@ async def get_active_btc_markets(session) -> list:
 
     for e in events:
         slug = e.get('slug', '')
-        if 'btc-updown-5m' not in slug and 'btc-updown-15m' not in slug:
+        if 'btc-updown-5m' not in slug:
             continue
         if not e.get('active') or e.get('closed'):
             continue
@@ -486,7 +486,7 @@ async def get_active_btc_markets(session) -> list:
         if seconds_left < 0:
             continue
 
-        tf = '15m' if 'btc-updown-15m' in slug else '5m'
+        tf = '5m'
 
         if seconds_left > 360:
             print(f'[Waiting] [{tf}] {e["title"]} | {seconds_left:.0f}s left')
