@@ -193,6 +193,7 @@ def build_signal_row(
     early_mode: bool = False,
     safe_mode: bool = False,
     trade_status: str = 'PENDING',
+    entry_window: str = 'normal',
 ) -> dict:
     """
     Build a dict matching the `signals` table schema from the variables
@@ -226,6 +227,7 @@ def build_signal_row(
         'best_ask_at_signal': round(float(best_ask_at_signal), 4) if best_ask_at_signal else None,
         'safe_mode':          bool(safe_mode),
         'trade_status':       trade_status,
+        'entry_window':       entry_window,
         'filled':             False,
         'outcome':            'PENDING',
     }
