@@ -1,28 +1,22 @@
 """
-resolve_pending_btc.py
+resolve_pending_btc_v2.py — fixed version using /events endpoint
 
 Reads PENDING bot.py BTC trades from signals_log.csv and resolves them
-by looking up actual market outcomes on Polymarket's gamma API.
-
-For each PENDING row:
-  1. Query gamma-api.polymarket.com/markets?slug=<slug>
-  2. Read 'outcomePrices' (e.g. [1.0, 0.0] means UP won)
-  3. Compute won/loss and PnL based on the row's direction/entry/shares
-  4. Write back to CSV
+by looking up actual market outcomes on Polymarket's gamma /events API.
 
 Usage:
-  python3 resolve_pending_btc.py
-  python3 resolve_pending_btc.py --dry-run   # show what would change without writing
+  python3 resolve_pending_btc_v2.py --dry-run --limit 50  # test first
+  python3 resolve_pending_btc_v2.py                       # do it for real
 """
 import argparse
 import csv
 import json
 import os
+import shutil
 import sys
 import time
 import urllib.request
 import urllib.error
-from datetime import datetime, timezone
 from collections import defaultdict
 
 CSV_PATH = '/root/polymarket-arb-bot/directional/signals_log.csv'
@@ -30,9 +24,9 @@ BACKUP_PATH = '/root/polymarket-arb-bot/directional/signals_log.csv.before_resol
 GAMMA_BASE = 'https://gamma-api.polymarket.com'
 
 
-def fetch_market(slug):
-    """Look up a market by slug. Returns dict or None."""
-    url = f'{GAMMA_BASE}/markets?slug={slug}'
+def fetch_event(slug):
+    """Query /events endpoint. Returns event dict or None."""
+    url = f'{GAMMA_BASE}/events?slug={slug}'
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'resolver/1.0'})
         with urllib.request.urlopen(req, timeout=15) as r:
@@ -43,32 +37,40 @@ def fetch_market(slug):
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return None
-        print(f'  HTTP error {e.code} for {slug}: {e.reason}')
+        print(f'  HTTP {e.code} for {slug}')
         return None
     except Exception as e:
-        print(f'  Error fetching {slug}: {e}')
+        print(f'  Error for {slug}: {e}')
         return None
 
 
-def parse_outcome(market):
+def parse_outcome(event):
     """
-    Returns (up_won: bool, final_up_price: float, final_down_price: float) or None.
-    Only returns a value if the market is resolved.
+    Returns (up_won: bool, final_up: float, final_down: float) or None if unresolved.
+    
+    Event structure:
+      event['closed'] = True (resolved)
+      event['markets'][0]['outcomePrices'] = '["0", "1"]'  (UP_final, DOWN_final)
+      event['markets'][0]['outcomes'] = '["Up", "Down"]'   (order confirmation)
     """
-    if not market:
+    if not event:
         return None
     
-    # Check if market is closed/resolved
-    closed = market.get('closed', False)
+    if not event.get('closed'):
+        return None  # not yet resolved
     
-    # outcomePrices is a JSON string like '["1", "0"]' (UP, DOWN)
-    op = market.get('outcomePrices')
-    if not op:
+    markets = event.get('markets')
+    if not markets or not isinstance(markets, list):
+        return None
+    
+    m = markets[0]
+    op_str = m.get('outcomePrices')
+    if not op_str:
         return None
     
     try:
-        if isinstance(op, str):
-            op = json.loads(op)
+        # outcomePrices is a JSON string like '["0", "1"]'
+        op = json.loads(op_str) if isinstance(op_str, str) else op_str
     except:
         return None
     
@@ -81,16 +83,16 @@ def parse_outcome(market):
     except (ValueError, TypeError):
         return None
     
-    # Only consider resolved if prices are clearly 1/0 (not partial)
-    if not closed and abs(up_price - down_price) < 0.95:
-        return None  # not yet resolved
+    # Must be definitively resolved (1/0 or 0/1, not 0.5/0.5)
+    if abs(up_price - down_price) < 0.95:
+        return None
     
     up_won = up_price > down_price
     return (up_won, up_price, down_price)
 
 
-def compute_pnl(direction, entry, shares, won):
-    """PnL for a sim trade. entry is the crowd_price paid per share."""
+def compute_pnl(entry, shares, won):
+    """PnL for a sim trade. entry is price paid per share."""
     try:
         entry = float(entry)
         shares = int(float(shares))
@@ -109,6 +111,8 @@ def main():
                         help='Show what would change without writing')
     parser.add_argument('--limit', type=int, default=0,
                         help='Process only N rows (0 = all)')
+    parser.add_argument('--sim-only', action='store_true', default=True,
+                        help='Only resolve dry_run=True rows (default: True)')
     args = parser.parse_args()
 
     print(f'Reading {CSV_PATH}')
@@ -120,16 +124,26 @@ def main():
     
     print(f'Total rows in CSV: {len(rows)}')
     
-    # Find candidate rows: PENDING outcome, has slug
     candidates = []
     for i, r in enumerate(rows):
         outcome = (r.get('outcome') or '').strip().upper()
         slug = (r.get('slug') or '').strip()
         direction = (r.get('direction') or '').strip().upper()
-        if outcome == 'PENDING' and slug and direction in ('UP', 'DOWN'):
-            candidates.append((i, r))
+        dry_run_str = (r.get('dry_run') or '').strip().lower()
+        is_dry = (dry_run_str == 'true')
+        
+        # Only resolve PENDING rows with valid slug + direction
+        if outcome != 'PENDING':
+            continue
+        if not slug or direction not in ('UP', 'DOWN'):
+            continue
+        # Sim-only filter
+        if args.sim_only and not is_dry:
+            continue
+        
+        candidates.append((i, r))
     
-    print(f'Candidates to resolve: {len(candidates)}')
+    print(f'Candidates to resolve: {len(candidates)} (sim-only={args.sim_only})')
     if not candidates:
         print('Nothing to do.')
         return
@@ -138,14 +152,15 @@ def main():
         candidates = candidates[:args.limit]
         print(f'Limiting to first {args.limit}')
     
-    # Cache by slug — many rows share the same market (different signal times)
-    market_cache = {}
+    # Cache by slug
+    event_cache = {}
     
     resolved_count = 0
     still_pending = 0
-    skipped = 0
     
-    stats = defaultdict(lambda: {'W': 0, 'L': 0})
+    stats = defaultdict(lambda: {'W': 0, 'L': 0, 'pnl': 0.0,
+                                  '5m_W': 0, '5m_L': 0, '15m_W': 0, '15m_L': 0,
+                                  'up_W': 0, 'up_L': 0, 'down_W': 0, 'down_L': 0})
     
     for n, (idx, r) in enumerate(candidates):
         slug = r['slug'].strip()
@@ -154,49 +169,73 @@ def main():
         shares = r.get('shares', '0')
         tf = r.get('timeframe', '?')
         
-        if (n + 1) % 25 == 0:
+        if (n + 1) % 50 == 0:
             print(f'  Progress: {n+1}/{len(candidates)}...')
         
-        # Use cache
-        if slug not in market_cache:
-            market = fetch_market(slug)
-            market_cache[slug] = market
-            time.sleep(0.1)  # gentle on gamma API
+        if slug not in event_cache:
+            event = fetch_event(slug)
+            event_cache[slug] = event
+            time.sleep(0.1)  # gentle on API
         else:
-            market = market_cache[slug]
+            event = event_cache[slug]
         
-        outcome_data = parse_outcome(market)
+        outcome_data = parse_outcome(event)
         if outcome_data is None:
             still_pending += 1
             continue
         
         up_won, final_up, final_down = outcome_data
         won = (direction == 'UP' and up_won) or (direction == 'DOWN' and not up_won)
-        pnl = compute_pnl(direction, entry, shares, won)
+        pnl = compute_pnl(entry, shares, won)
         
-        # Update row
         rows[idx]['outcome'] = 'WIN' if won else 'LOSS'
-        rows[idx]['resolution_cl_price'] = f'{final_up}/{final_down}'  # UP_final/DOWN_final
+        rows[idx]['resolution_cl_price'] = f'{final_up}/{final_down}'
         rows[idx]['fill_pnl'] = str(pnl)
         rows[idx]['up_won'] = 'True' if up_won else 'False'
         
         resolved_count += 1
-        stats[tf]['W' if won else 'L'] += 1
+        bucket = stats['BTC']
+        if won: bucket['W'] += 1
+        else: bucket['L'] += 1
+        bucket['pnl'] += pnl
+        if tf == '5m':
+            if won: bucket['5m_W'] += 1
+            else: bucket['5m_L'] += 1
+        elif tf == '15m':
+            if won: bucket['15m_W'] += 1
+            else: bucket['15m_L'] += 1
+        if direction == 'UP':
+            if won: bucket['up_W'] += 1
+            else: bucket['up_L'] += 1
+        else:
+            if won: bucket['down_W'] += 1
+            else: bucket['down_L'] += 1
     
     print()
     print('═══ RESOLUTION SUMMARY ═══')
     print(f'Resolved: {resolved_count}')
     print(f'Still pending: {still_pending}')
-    print(f'Skipped: {skipped}')
     print()
     
-    if stats:
-        print('Per-timeframe breakdown:')
-        for tf in sorted(stats.keys()):
-            s = stats[tf]
-            total = s['W'] + s['L']
-            wr = (s['W']/total*100) if total > 0 else 0
-            print(f'  {tf}: {s["W"]}W / {s["L"]}L = {wr:.1f}% WR ({total} resolved)')
+    if resolved_count > 0:
+        s = stats['BTC']
+        total = s['W'] + s['L']
+        wr = (s['W']/total*100) if total > 0 else 0
+        print(f'BTC: {s["W"]}W / {s["L"]}L = {wr:.1f}% WR | PnL ${s["pnl"]:+.2f}')
+        
+        tf5 = s['5m_W'] + s['5m_L']
+        tf15 = s['15m_W'] + s['15m_L']
+        wr5 = (s['5m_W']/tf5*100) if tf5 > 0 else 0
+        wr15 = (s['15m_W']/tf15*100) if tf15 > 0 else 0
+        print(f'  5m: {s["5m_W"]}/{s["5m_L"]} = {wr5:.1f}% ({tf5} resolved)')
+        print(f' 15m: {s["15m_W"]}/{s["15m_L"]} = {wr15:.1f}% ({tf15} resolved)')
+        print()
+        up = s['up_W'] + s['up_L']
+        down = s['down_W'] + s['down_L']
+        up_wr = (s['up_W']/up*100) if up > 0 else 0
+        down_wr = (s['down_W']/down*100) if down > 0 else 0
+        print(f'  UP: {s["up_W"]}/{s["up_L"]} = {up_wr:.1f}%')
+        print(f'DOWN: {s["down_W"]}/{s["down_L"]} = {down_wr:.1f}%')
     
     if args.dry_run:
         print('\nDRY RUN — no changes written to CSV')
@@ -206,8 +245,6 @@ def main():
         print('No updates to write.')
         return
     
-    # Backup the original CSV before overwriting
-    import shutil
     shutil.copy(CSV_PATH, BACKUP_PATH)
     print(f'\nBacked up original to {BACKUP_PATH}')
     
