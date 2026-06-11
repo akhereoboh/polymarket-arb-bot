@@ -161,7 +161,8 @@ def log_skipped_signal(market: dict, direction: str, confidence: float,
 
 async def log_signal(market: dict, direction: str, shares: int,
                      cl_pct: float, bn_pct: float, confidence: float,
-                     cl_price: float, opening_price: float, binance_price: float):
+                     cl_price: float, opening_price: float, binance_price: float,
+                     entry_window: str = 'normal'):
     """Write a PENDING signal row to signals_log.csv with all 27 columns."""
     file_exists = Path(LOG_FILE).exists()
     fieldnames = [
@@ -232,6 +233,7 @@ async def log_signal(market: dict, direction: str, shares: int,
             crowd_price=crowd_price,
             safe_mode=DRY_RUN,
             trade_status='PENDING',
+            entry_window=entry_window,
         )
         async with aiohttp.ClientSession() as session:
             await db_insert_signal(session, row)
@@ -1030,7 +1032,8 @@ async def market_scanner():
                     }
                     _traded.add(cid)
                     await log_signal(market, direction, shares, cl_pct, bn_pct, confidence,
-                               cl_price, _opening_prices[cid], _btc_history[-1][1])
+                               cl_price, _opening_prices[cid], _btc_history[-1][1],
+                               entry_window=entry_window)
                     bal_before = await get_balance()
                     trade_result = await place_trade(market, direction, shares, confidence, early_mode=early_mode)
                     await asyncio.sleep(2)
